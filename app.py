@@ -1525,6 +1525,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div id="devcode_box" style="display:none">
         <div class="hint" style="text-align:center">Digite este codigo na pagina que abrir:</div>
         <div class="devcode" id="devcode"></div>
+        <button class="primary" id="copy_devcode" style="width:100%;justify-content:center" onclick="copyDevCode()">Copiar código</button>
       </div>
       <div id="login_link" style="margin-top:10px;text-align:center"></div>
       <div id="code_box" style="display:none;margin-top:14px">
@@ -1827,6 +1828,7 @@ function resetLoginUI(){
   document.getElementById('login_step').innerHTML='';
   document.getElementById('qrbox').innerHTML='';
   document.getElementById('devcode_box').style.display='none';
+  document.getElementById('copy_devcode').textContent='Copiar código';
   document.getElementById('login_link').innerHTML='';
   document.getElementById('code_box').style.display='none';
   document.getElementById('f_code').value='';
@@ -1838,6 +1840,32 @@ function renderQR(text){
     const qr = qrcode(0, 'L'); qr.addData(text); qr.make();
     box.innerHTML = qr.createSvgTag({cellSize:4, margin:1, scalable:true});
   }catch(e){ box.innerHTML = '<div class="hint">(nao consegui gerar o QR — use o link abaixo)</div>'; }
+}
+
+async function copyDevCode(){
+  const code = document.getElementById('devcode').textContent.trim();
+  if(!code) return;
+  const btn = document.getElementById('copy_devcode');
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(code);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    btn.textContent = 'Copiado!';
+    setTimeout(()=>{ btn.textContent='Copiar código'; }, 1800);
+  }catch(e){
+    btn.textContent = 'Selecione e copie';
+    setTimeout(()=>{ btn.textContent='Copiar código'; }, 2200);
+  }
 }
 
 async function startLogin(method){
