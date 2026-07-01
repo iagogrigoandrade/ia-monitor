@@ -1,6 +1,14 @@
 # Receita usada pelo Coolify para rodar o Monitor de IA.
-# Usa somente Python (o app nao depende de bibliotecas externas).
-FROM python:3.12-slim
+# Base com Node (para instalar a CLI do Codex) + Python (para rodar o painel).
+FROM node:20-slim
+
+# Python 3 (o painel usa so a biblioteca padrao) e certificados
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# CLI oficial do Codex (necessaria para o login "celular/QR" do Codex)
+RUN npm install -g @openai/codex
 
 WORKDIR /app
 
@@ -19,4 +27,4 @@ VOLUME ["/data"]
 
 EXPOSE 8765
 
-CMD ["python", "app.py"]
+CMD ["python3", "app.py"]
