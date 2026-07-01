@@ -1458,6 +1458,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card.dragging{opacity:.4}
   .card.drop-target{border-color:var(--accent);border-style:dashed}
   .card .corner{position:absolute;top:11px;right:11px;display:flex;align-items:center;gap:6px;z-index:1}
+  /* nos cards com botao de creditos, alinha o canto com o icone do provedor */
+  .card.has-topup .corner{top:24px}
   .card .grip{color:var(--faint);cursor:grab;display:flex;gap:2px;padding:4px;border-radius:6px}
   .card .grip:hover{color:var(--muted);background:var(--surface2)}
   .card .grip:active{cursor:grabbing}
@@ -1547,10 +1549,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .svc-grid.locked .svc.active{opacity:1}
   .card .reconnect{width:100%;justify-content:center;margin-top:10px}
   .card .topup{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border-radius:7px;
-    border:1px solid var(--line2);background:var(--surface2);color:var(--muted);
+    border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.1);color:var(--accent);
     font-size:11.5px;font-weight:500;line-height:1;text-decoration:none;white-space:nowrap;
-    transition:border-color .16s var(--ease),color .16s var(--ease)}
-  .card .topup:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+    transition:border-color .16s var(--ease),background-color .16s var(--ease)}
+  .card .topup:hover{border-color:var(--accent);background:rgba(34,197,94,.18);color:var(--accent);text-decoration:none}
   .card .topup svg{width:14px;height:14px}
   .hint{font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.6}
   .hint code{background:var(--bg2);padding:1px 6px;border-radius:5px;font-family:"Fira Code",monospace;font-size:11.5px}
