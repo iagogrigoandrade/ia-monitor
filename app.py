@@ -667,12 +667,16 @@ def fetch_account(acc, force=False):
     now = time.time()
     bo = _backoff.get(aid)
 
+    def set_updated(ts):
+        base["updatedAt"] = int(ts * 1000)
+
     def with_cache_or(msg):
         """Mostra o ultimo valor bom (marcado) ou, se nao houver, a mensagem."""
         if cached and now - cached["ts"] < STALE_MAX:
             keep = dict(cached["result"])
             keep["stale"] = msg
             base.update(keep)
+            set_updated(cached["ts"])
         else:
             base["error"] = msg
         return base
@@ -686,6 +690,7 @@ def fetch_account(acc, force=False):
     # 1) fora de "force": respeita o intervalo do provedor (reusa cache recente)
     if not force and cached and now - cached["ts"] < interval:
         base.update(cached["result"])
+        set_updated(cached["ts"])
         return base
 
     try:
@@ -710,6 +715,7 @@ def fetch_account(acc, force=False):
         return with_cache_or(result["error"])
 
     base.update(result)
+    set_updated(now)
     return base
 
 
@@ -1612,6 +1618,15 @@ function resetText(m){
   return `${resetRelative(d)} (${resetAbsolute(d)})`;
 }
 
+function updatedAgo(value){
+  const d = resetDate(value);
+  if(!d) return 'ainda não atualizado';
+  const mins = Math.max(0, Math.floor((Date.now() - d.getTime()) / 60000));
+  if(mins < 1) return 'atualizado agora';
+  if(mins === 1) return 'atualizado há 1 min';
+  return `atualizado há ${mins} min`;
+}
+
 function metricHTML(m){
   if(m.percent !== undefined && m.percent !== null){
     const p = Math.max(0, Math.min(100, m.percent));
@@ -1640,7 +1655,7 @@ function cardHTML(a){
     if(a.stale){ inner += `<div class="stale">${svg('clock',13)} mostrando o último valor — atualizando…</div>`; }
   }
   const foot = `<div class="cfoot">
-       <span class="auto" title="Definido automaticamente conforme o limite de consultas deste serviço">${svg('clock',13)} auto a cada <b>${a.interval}s</b></span>
+       <span class="auto" title="Última atualização deste card">${svg('clock',13)} ${esc(updatedAgo(a.updatedAt))}</span>
        <span class="acts">
           <button class="iconbtn" title="Renomear conta" onclick="renameAcc('${a.id}')">${svg('edit')}</button>
           <button class="iconbtn danger" title="Remover conta" onclick="delAcc('${a.id}')">${svg('trash')}</button>
