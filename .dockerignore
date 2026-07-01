@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+backups/
+config.json
+*.bat
+*.command
+*.sh
