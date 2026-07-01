@@ -22,6 +22,7 @@ O projeto roda localmente com Python 3 e também pode ser publicado via Docker/C
 .
 |-- app.py                  # aplicação principal, backend e interface embutida
 |-- qrcode.min.js           # biblioteca local para QR Code
+|-- assets/                 # logos e arquivos estáticos da interface
 |-- Dockerfile              # imagem usada no deploy
 |-- .dockerignore           # exclui arquivos locais do build Docker
 |-- .gitignore              # exclui dados sensíveis e arquivos gerados do Git

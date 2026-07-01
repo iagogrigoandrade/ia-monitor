@@ -14,6 +14,7 @@ WORKDIR /app
 
 # Copia o codigo do painel para dentro do container
 COPY app.py qrcode.min.js ./
+COPY assets ./assets
 
 # Onde ficam config.json e backups (volume persistente montado pelo Coolify)
 ENV IA_MONITOR_CONFIG=/data/config.json

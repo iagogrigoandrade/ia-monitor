@@ -37,6 +37,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 # --------------------------------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSET_DIR = os.path.join(BASE_DIR, "assets")
 # Permite apontar para outro arquivo de config (usado em testes p/ nao mexer no real)
 CONFIG_PATH = os.environ.get("IA_MONITOR_CONFIG", os.path.join(BASE_DIR, "config.json"))
 # Os backups ficam ao lado do config.json. Assim, apontando o config para um
@@ -1072,6 +1073,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _send_asset(self, path):
+        rel = path[len("/assets/"):].replace("/", os.sep)
+        full = os.path.normpath(os.path.join(ASSET_DIR, rel))
+        root = os.path.abspath(ASSET_DIR)
+        if not full.startswith(root + os.sep) or not full.lower().endswith(".webp"):
+            self._send(404, {"error": "not found"})
+            return
+        if not os.path.exists(full):
+            self._send(404, {"error": "not found"})
+            return
+        with open(full, "rb") as f:
+            self._send(200, f.read(), "image/webp")
+
     def _check_auth(self):
         """Exige usuario+senha se IA_MONITOR_PASSWORD estiver definida.
         Sem senha configurada (modo local), libera tudo."""
@@ -1131,6 +1145,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"status": job.status, "mode": job.mode, "method": job.method,
                              "url": job.url, "code": job.code, "message": job.message,
                              "account_id": job.account_id})
+        elif path.startswith("/assets/"):
+            self._send_asset(path)
         elif path == "/qrcode.min.js":
             qpath = os.path.join(BASE_DIR, "qrcode.min.js")
             if os.path.exists(qpath):
@@ -1308,7 +1324,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card .grip:hover{color:var(--muted);background:var(--surface2)}
   .card .grip:active{cursor:grabbing}
   .card .top{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-right:22px}
-  .ic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;flex-shrink:0}
+  .ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;
+    overflow:hidden;background:#fff;border:1px solid var(--line2);box-shadow:0 6px 18px -14px rgba(0,0,0,.9)}
+  .ic img{width:100%;height:100%;object-fit:cover;display:block}
   .ic svg{width:18px;height:18px}
   .i-claude{background:rgba(217,119,87,.14);color:var(--claude)}
   .i-codex{background:rgba(16,185,129,.14);color:var(--codex)}
@@ -1316,7 +1334,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .i-openrouter{background:rgba(168,85,247,.14);color:var(--openrouter)}
   .card h3{margin:0;font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .card .badge{font-size:10.5px;color:var(--muted);font-weight:500;letter-spacing:.3px;text-transform:uppercase}
-  .card .detail{font-size:11.5px;color:var(--faint);margin:-6px 0 12px 42px;word-break:break-all}
+  .card .detail{font-size:11.5px;color:var(--faint);margin:-6px 0 12px 48px;word-break:break-all}
 
   .metric{margin:14px 0}
   .metric .row{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:6px}
@@ -1400,7 +1418,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .card .top{margin-bottom:10px}
     .card h3{font-size:14px}
     .card .badge{font-size:10px}
-    .card .detail{font-size:11px;margin:-4px 0 10px 42px}
+    .card .detail{font-size:11px;margin:-4px 0 10px 48px}
     .val{font-size:22px}
     .val small{font-size:11.5px}
     .metric{margin:10px 0}
@@ -1516,6 +1534,17 @@ const ICON = {
 };
 function svg(name, w){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${w?` style="width:${w}px;height:${w}px"`:''}>${ICON[name]||''}</svg>`; }
 const TYPEICON = {claude:'bot', codex:'cpu', deepseek:'activity', openrouter:'link'};
+const TYPELOGO = {
+  claude:'/assets/integrations/claude-icon.webp',
+  codex:'/assets/integrations/codex-icon.webp',
+  deepseek:'/assets/integrations/deepseek-icon.webp',
+  openrouter:'/assets/integrations/openrouter-icon.webp',
+};
+
+function providerMark(type){
+  const src = TYPELOGO[type];
+  return src ? `<img src="${src}" alt="" aria-hidden="true" loading="lazy" decoding="async">` : svg(TYPEICON[type]||'activity');
+}
 
 function color(p){ if(p>=90) return 'var(--bad)'; if(p>=70) return 'var(--warn)'; return 'var(--ok)'; }
 function fmtNum(v){ return (typeof v==='number') ? v.toLocaleString('pt-BR',{maximumFractionDigits:4}) : v; }
@@ -1555,7 +1584,7 @@ function cardHTML(a){
   return `<div class="card" draggable="true" data-id="${a.id}">
     <span class="grip" title="Arraste para reordenar">${svg('grip')}</span>
     <div class="top">
-      <span class="ic i-${a.type}">${svg(TYPEICON[a.type]||'activity')}</span>
+      <span class="ic i-${a.type}">${providerMark(a.type)}</span>
       <div style="min-width:0">
         <h3>${a.label||a.typeLabel}</h3>
         <span class="badge">${a.typeLabel}</span>
