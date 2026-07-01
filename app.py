@@ -130,13 +130,43 @@ def save_config(cfg):
 
 
 def update_account_creds(account_id, new_creds):
-    """Grava de volta tokens renovados (rotacao de refresh token)."""
-    cfg = load_config()
-    for acc in cfg["accounts"]:
-        if acc.get("id") == account_id:
-            acc.setdefault("creds", {}).update(new_creds)
-            break
-    save_config(cfg)
+    """Grava de volta tokens renovados (rotacao de refresh token).
+
+    Read-modify-write ATOMICO: segura o lock durante todo o ciclo para que
+    renovacoes de contas diferentes em paralelo nao sobrescrevam umas as
+    outras (o que perderia o refresh_token rotacionado e derrubaria o login).
+    """
+    with _config_lock:
+        cfg = load_config()
+        for acc in cfg["accounts"]:
+            if acc.get("id") == account_id:
+                acc.setdefault("creds", {}).update(new_creds)
+                break
+        save_config(cfg)
+
+
+def current_account_creds(account_id):
+    """Le as credenciais mais recentes da conta direto do config."""
+    with _config_lock:
+        for acc in load_config().get("accounts", []):
+            if acc.get("id") == account_id:
+                return dict(acc.get("creds", {}))
+    return {}
+
+
+# Serializa a renovacao de token por conta: evita que dois fetches simultaneos
+# gastem (e invalidem) o mesmo refresh_token ao renovar ao mesmo tempo.
+_refresh_locks = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def account_refresh_lock(account_id):
+    with _refresh_locks_guard:
+        lk = _refresh_locks.get(account_id)
+        if lk is None:
+            lk = threading.Lock()
+            _refresh_locks[account_id] = lk
+        return lk
 
 
 # --------------------------------------------------------------------------
@@ -220,29 +250,39 @@ def fmt_reset(iso_or_ts):
 # --------------------------------------------------------------------------
 
 def claude_refresh(account_id, creds):
-    rt = creds.get("refreshToken")
-    if not rt:
+    with account_refresh_lock(account_id):
+        # Outra thread pode ter renovado enquanto esperavamos o lock: reaproveita
+        # um access_token novo e ainda valido em vez de gastar o refresh_token.
+        latest = current_account_creds(account_id)
+        lt = latest.get("accessToken")
+        if lt and lt != creds.get("accessToken"):
+            exp = latest.get("expiresAt")
+            if not exp or time.time() * 1000 < (exp - 60000):
+                creds.update(latest)
+                return creds
+        rt = latest.get("refreshToken") or creds.get("refreshToken")
+        if not rt:
+            return None
+        status, j = http_json(
+            CLAUDE_TOKEN_URL,
+            method="POST",
+            headers={"User-Agent": CLAUDE_UA},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": rt,
+                "client_id": CLAUDE_CLIENT_ID,
+            },
+        )
+        if status == 200 and j.get("access_token"):
+            new = {
+                "accessToken": j["access_token"],
+                "refreshToken": j.get("refresh_token", rt),
+                "expiresAt": int(time.time() * 1000) + int(j.get("expires_in", 3600)) * 1000,
+            }
+            update_account_creds(account_id, new)
+            creds.update(new)
+            return creds
         return None
-    status, j = http_json(
-        CLAUDE_TOKEN_URL,
-        method="POST",
-        headers={"User-Agent": CLAUDE_UA},
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": rt,
-            "client_id": CLAUDE_CLIENT_ID,
-        },
-    )
-    if status == 200 and j.get("access_token"):
-        new = {
-            "accessToken": j["access_token"],
-            "refreshToken": j.get("refresh_token", rt),
-            "expiresAt": int(time.time() * 1000) + int(j.get("expires_in", 3600)) * 1000,
-        }
-        update_account_creds(account_id, new)
-        creds.update(new)
-        return creds
-    return None
 
 
 def claude_headers(token):
@@ -281,7 +321,7 @@ def provider_claude(acc):
     creds = dict(acc.get("creds", {}))
     token = creds.get("accessToken")
     if not token:
-        return {"error": "Sem login do Claude. Adicione a conta com login pelo navegador ou QR."}
+        return {"error": "Sem login do Claude. Reconecte a conta.", "reauth": True}
 
     exp = creds.get("expiresAt")
     if exp and time.time() * 1000 > (exp - 60000):
@@ -297,6 +337,8 @@ def provider_claude(acc):
                 "https://api.anthropic.com/api/oauth/usage", headers=claude_headers(token))
     if status == 429:
         return {"error": "Claude limitou as consultas (429). Vai voltar sozinho em instantes.", "transient": True}
+    if status == 401 or status == 403:
+        return {"error": "Login do Claude expirado. Reconecte a conta.", "reauth": True}
     if status != 200:
         msg = usage.get("_error") or usage.get("error", {}).get("message") if isinstance(usage, dict) else None
         return {"error": f"Falha ao consultar Claude ({status}). {msg or 'Faca login novamente.'}"}
@@ -355,32 +397,42 @@ def _codex_detail(creds, usage):
 
 
 def codex_refresh(account_id, creds):
-    rt = creds.get("refresh_token")
-    if not rt:
+    with account_refresh_lock(account_id):
+        # Outra thread pode ter renovado enquanto esperavamos o lock:
+        # se ja existe um access_token novo e valido, reaproveita (nao gasta o refresh_token).
+        latest = current_account_creds(account_id)
+        lt = latest.get("access_token")
+        if lt and lt != creds.get("access_token"):
+            exp = jwt_exp(lt)
+            if not exp or time.time() < (exp - 60):
+                creds.update(latest)
+                return creds
+        rt = latest.get("refresh_token") or creds.get("refresh_token")
+        if not rt:
+            return None
+        status, j = http_json(
+            "https://auth.openai.com/oauth/token",
+            method="POST",
+            data={
+                "client_id": CODEX_CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": rt,
+                "scope": "openid profile email",
+            },
+        )
+        if status == 200 and j.get("access_token"):
+            new = {
+                "access_token": j["access_token"],
+                "refresh_token": j.get("refresh_token", rt),
+                "id_token": j.get("id_token", creds.get("id_token")),
+                "account_id": j.get("account_id") or creds.get("account_id"),
+            }
+            if not new.get("account_id"):
+                new["account_id"] = _codex_account_id(new)
+            update_account_creds(account_id, new)
+            creds.update(new)
+            return creds
         return None
-    status, j = http_json(
-        "https://auth.openai.com/oauth/token",
-        method="POST",
-        data={
-            "client_id": CODEX_CLIENT_ID,
-            "grant_type": "refresh_token",
-            "refresh_token": rt,
-            "scope": "openid profile email",
-        },
-    )
-    if status == 200 and j.get("access_token"):
-        new = {
-            "access_token": j["access_token"],
-            "refresh_token": j.get("refresh_token", rt),
-            "id_token": j.get("id_token", creds.get("id_token")),
-            "account_id": j.get("account_id") or creds.get("account_id"),
-        }
-        if not new.get("account_id"):
-            new["account_id"] = _codex_account_id(new)
-        update_account_creds(account_id, new)
-        creds.update(new)
-        return creds
-    return None
 
 
 def _codex_install_id():
@@ -515,7 +567,7 @@ def codex_usage_request(creds):
 def provider_codex(acc):
     creds = dict(acc.get("creds", {}))
     if not creds.get("access_token"):
-        return {"error": "Sem login do Codex. Adicione a conta com login pelo navegador ou QR."}
+        return {"error": "Sem login do Codex. Reconecte a conta.", "reauth": True}
 
     # renova preventivamente se o token ja expirou
     exp = jwt_exp(creds["access_token"])
@@ -544,7 +596,7 @@ def provider_codex(acc):
     if status == 429 or is_html(j) or (status == 403 and not (isinstance(j, dict) and j.get("error"))):
         return {"error": "Codex limitou as consultas por instantes. Volta sozinho.", "transient": True}
     if status == 401 or status == 403:
-        return {"error": "Login do Codex expirado. Remova a conta e adicione de novo (navegador ou QR)."}
+        return {"error": "Login do Codex expirado. Reconecte a conta.", "reauth": True}
     msg = (j.get("error", {}) or {}).get("message") if isinstance(j, dict) else None
     return {"error": f"Falha ao consultar Codex ({status}). {msg or 'Verifique o login do Codex.'}"}
 
@@ -712,7 +764,11 @@ def fetch_account(acc, force=False):
 
     # erro comum (nao transitorio): se houver valor bom recente, mostra ele
     if result.get("error"):
-        return with_cache_or(result["error"])
+        out = with_cache_or(result["error"])
+        # login expirado: sinaliza o botao de reconectar (so quando nao ha cache bom)
+        if result.get("reauth") and out.get("error"):
+            out["reauth"] = True
+        return out
 
     base.update(result)
     set_updated(now)
@@ -831,11 +887,12 @@ def _pkce():
 
 
 class LoginJob:
-    def __init__(self, provider, label, method):
+    def __init__(self, provider, label, method, target_id=None):
         self.id = uuid.uuid4().hex[:12]
         self.provider = provider
         self.label = label
         self.method = method            # "browser" | "phone"
+        self.target_id = target_id      # reconexao: conta existente a atualizar
         self.kind = "oauth" if provider == "claude" else "cli"
         # mode diz para a interface o que mostrar:
         #   loopback -> so aguarda (codex no PC)
@@ -872,10 +929,29 @@ def _find_device_code(text):
 def _save_account(provider, label, creds):
     acc = {"id": uuid.uuid4().hex[:12], "type": provider,
            "label": label or TYPE_LABELS[provider], "creds": creds}
-    cfg = load_config()
-    cfg["accounts"].append(acc)
-    save_config(cfg)
+    with _config_lock:
+        cfg = load_config()
+        cfg["accounts"].append(acc)
+        save_config(cfg)
     return acc["id"]
+
+
+def _apply_login(provider, label, creds, target_id=None):
+    """Reconexao: atualiza as credenciais de uma conta existente.
+    Sem alvo (ou alvo inexistente/de outro tipo), cria uma conta nova."""
+    if target_id:
+        with _config_lock:
+            cfg = load_config()
+            for acc in cfg["accounts"]:
+                if acc.get("id") == target_id and acc.get("type") == provider:
+                    acc["creds"] = creds
+                    if label:
+                        acc["label"] = label
+                    save_config(cfg)
+                    _result_cache.pop(target_id, None)
+                    _backoff.pop(target_id, None)
+                    return target_id
+    return _save_account(provider, label, creds)
 
 
 def _cancel_login_job(job, message="Cancelado."):
@@ -941,7 +1017,7 @@ def _codex_worker(job):
             job.status = "error"
             job.message = err
             return
-        job.account_id = _save_account("codex", job.label, creds)
+        job.account_id = _apply_login("codex", job.label, creds, job.target_id)
         job.status = "done"
         job.message = "Login concluido!"
     else:
@@ -995,7 +1071,7 @@ def _claude_exchange(job, pasted):
             "refreshToken": j.get("refresh_token"),
             "expiresAt": int(time.time() * 1000) + int(j.get("expires_in", 3600)) * 1000,
         }
-        job.account_id = _save_account("claude", job.label, creds)
+        job.account_id = _apply_login("claude", job.label, creds, job.target_id)
         job.status = "done"
         job.message = "Login concluido!"
         return None
@@ -1012,7 +1088,7 @@ def _login_watchdog(job, timeout=600):
         _cancel_login_job(job, "Tempo esgotado. Tente novamente.")
 
 
-def start_login(provider, label, method, replace=False):
+def start_login(provider, label, method, replace=False, target_id=None):
     if provider not in ("codex", "claude"):
         return None, "Login nao disponivel para este servico."
     if method not in ("browser", "phone"):
@@ -1024,7 +1100,7 @@ def start_login(provider, label, method, replace=False):
             return None, "Ja existe um login em andamento. Conclua ou cancele antes."
         for j in active:
             _cancel_login_job(j, "Cancelado por nova tentativa.")
-        job = LoginJob(provider, label, method)
+        job = LoginJob(provider, label, method, target_id)
         _login_jobs[job.id] = job
     if job.kind == "oauth":       # claude
         _claude_build_url(job)
@@ -1179,13 +1255,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/accounts/reorder":
             self._handle_reorder(body)
         elif self.path == "/api/settings":
-            cfg = load_config()
-            if "refresh_seconds" in body:
-                try:
-                    cfg["refresh_seconds"] = max(15, int(body["refresh_seconds"]))
-                except Exception:
-                    pass
-            save_config(cfg)
+            with _config_lock:
+                cfg = load_config()
+                if "refresh_seconds" in body:
+                    try:
+                        cfg["refresh_seconds"] = max(15, int(body["refresh_seconds"]))
+                    except Exception:
+                        pass
+                save_config(cfg)
             self._send(200, {"ok": True})
         elif self.path == "/api/login/start":
             if body.get("type") == "codex" and (body.get("method") or "browser") == "browser" and \
@@ -1193,7 +1270,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "No deploy, o login 'Neste PC' do Codex nao funciona porque o retorno usa localhost:1455. Use 'No celular (QR)'."})
                 return
             job, err = start_login(body.get("type"), (body.get("label") or "").strip(),
-                                   body.get("method") or "browser", bool(body.get("replace")))
+                                   body.get("method") or "browser", bool(body.get("replace")),
+                                   (body.get("target_id") or "").strip() or None)
             if err:
                 self._send(400, {"error": err})
             else:
@@ -1211,6 +1289,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_add(self, body):
         atype = body.get("type")
         label = (body.get("label") or "").strip()
+        target_id = (body.get("target_id") or "").strip() or None
         if atype not in PROVIDERS:
             self._send(400, {"error": "Tipo invalido."})
             return
@@ -1235,43 +1314,61 @@ class Handler(BaseHTTPRequestHandler):
                 return
             acc["creds"] = creds
 
-        cfg = load_config()
-        cfg["accounts"].append(acc)
-        save_config(cfg)
+        with _config_lock:
+            cfg = load_config()
+            # reconexao: atualiza a conta existente em vez de duplicar
+            existing = next((a for a in cfg["accounts"]
+                             if target_id and a.get("id") == target_id and a.get("type") == atype), None)
+            if existing:
+                if label:
+                    existing["label"] = label
+                for k in ("api_key", "creds"):
+                    if k in acc:
+                        existing[k] = acc[k]
+                save_config(cfg)
+                _result_cache.pop(existing["id"], None)
+                _backoff.pop(existing["id"], None)
+                self._send(200, {"ok": True, "id": existing["id"]})
+                return
+            cfg["accounts"].append(acc)
+            save_config(cfg)
         self._send(200, {"ok": True, "id": acc["id"]})
 
     def _handle_delete(self, body):
         aid = body.get("id")
-        cfg = load_config()
-        before = len(cfg["accounts"])
-        cfg["accounts"] = [a for a in cfg["accounts"] if a.get("id") != aid]
-        save_config(cfg)
+        with _config_lock:
+            cfg = load_config()
+            before = len(cfg["accounts"])
+            cfg["accounts"] = [a for a in cfg["accounts"] if a.get("id") != aid]
+            save_config(cfg)
         _result_cache.pop(aid, None)
         self._send(200, {"ok": True, "removed": before - len(cfg["accounts"])})
 
     def _handle_rename(self, body):
         aid = body.get("id")
         label = (body.get("label") or "").strip()[:80]
-        cfg = load_config()
-        for acc in cfg["accounts"]:
-            if acc.get("id") == aid:
-                acc["label"] = label or TYPE_LABELS.get(acc.get("type"), "Conta")
-                save_config(cfg)
-                self._send(200, {"ok": True, "label": acc["label"]})
-                return
+        with _config_lock:
+            cfg = load_config()
+            for acc in cfg["accounts"]:
+                if acc.get("id") == aid:
+                    acc["label"] = label or TYPE_LABELS.get(acc.get("type"), "Conta")
+                    save_config(cfg)
+                    self._send(200, {"ok": True, "label": acc["label"]})
+                    return
         self._send(404, {"error": "Conta nao encontrada."})
 
     def _handle_reorder(self, body):
         ids = body.get("ids") or []
-        cfg = load_config()
-        by_id = {a.get("id"): a for a in cfg["accounts"]}
-        new_order = [by_id[i] for i in ids if i in by_id]
-        # preserva quaisquer contas que nao vieram na lista (seguranca)
-        for a in cfg["accounts"]:
-            if a not in new_order:
-                new_order.append(a)
-        cfg["accounts"] = new_order
-        save_config(cfg)
+        with _config_lock:
+            cfg = load_config()
+            by_id = {a.get("id"): a for a in cfg["accounts"]}
+            new_order = [by_id[i] for i in ids if i in by_id]
+            # preserva quaisquer contas que nao vieram na lista (seguranca)
+            for a in cfg["accounts"]:
+                if a not in new_order:
+                    new_order.append(a)
+            cfg["accounts"] = new_order
+            save_config(cfg)
         self._send(200, {"ok": True})
 
 
@@ -1288,11 +1385,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  // aplica o tema salvo antes do render, evitando o flash
+  (function(){ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('ia-theme') || 'dark'); }catch(e){ document.documentElement.setAttribute('data-theme','dark'); } })();
+</script>
 <style>
   :root{
-    --bg:#0F172A; --bg2:#0b1120; --surface:#141d31; --surface2:#1b2740;
-    --line:#26324a; --line2:#334155;
-    --txt:#F8FAFC; --muted:#94a3b8; --faint:#64748b;
+    --bg:#1B2438; --bg2:#151d30; --surface:#222e49; --surface2:#2b3a5c;
+    --line:#38466385; --line2:#465575;
+    --txt:#F8FAFC; --muted:#a6b3c9; --faint:#7c8aa5;
     --accent:#22C55E; --accent-ink:#052e16;
     --ok:#22C55E; --warn:#F5A623; --bad:#EF4444;
     --claude:#d97757; --codex:#10b981; --deepseek:#4f8cff; --openrouter:#a855f7;
@@ -1300,25 +1401,39 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
     --ease:cubic-bezier(.2,.7,.3,1);
   }
+  html[data-theme="light"]{
+    --bg:#eef2f8; --bg2:#ffffff; --surface:#ffffff; --surface2:#f1f5f9;
+    --line:#e2e8f0; --line2:#cbd5e1;
+    --txt:#0f172a; --muted:#475569; --faint:#64748b;
+    --accent:#16a34a; --accent-ink:#ffffff;
+    --shadow:0 1px 2px rgba(15,23,42,.06), 0 8px 24px -12px rgba(15,23,42,.18);
+  }
+  html[data-theme="light"] body{
+    background:radial-gradient(1200px 600px at 80% -10%, #dbe4f3 0%, var(--bg) 55%) fixed}
+  html[data-theme="light"] header{background:rgba(255,255,255,.82)}
+  html[data-theme="light"] .brand .logo{background:linear-gradient(145deg,#ffffff,#eef2f8)}
+  html[data-theme="light"] .bar{background:#e2e8f0}
+  html[data-theme="light"] button.danger{color:#dc2626;border-color:#fecaca}
+  html[data-theme="light"] .err{color:#b91c1c;border-color:#fecaca}
+  body{transition:background-color .25s var(--ease),color .25s var(--ease)}
+  .card,button,input,select,.modal,header{transition:background-color .25s var(--ease),border-color .25s var(--ease),color .25s var(--ease)}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{-webkit-text-size-adjust:100%}
   body{margin:0;font-family:"Fira Sans","Segoe UI",Roboto,system-ui,sans-serif;
-    background:radial-gradient(1200px 600px at 80% -10%, #16203a 0%, var(--bg) 55%) fixed;
+    background:radial-gradient(1200px 600px at 80% -10%, #2a3757 0%, var(--bg) 55%) fixed;
     color:var(--txt);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden}
   .mono{font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
 
   header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:12px clamp(12px,4vw,28px);
     border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;
-    background:rgba(15,23,42,.82);backdrop-filter:saturate(140%) blur(10px)}
+    background:rgba(27,36,56,.82);backdrop-filter:saturate(140%) blur(10px)}
   .brand{display:flex;align-items:center;gap:11px}
   .brand .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
-    background:linear-gradient(145deg,#1e293b,#0b1324);border:1px solid var(--line2);color:var(--accent)}
+    background:linear-gradient(145deg,#2c3a58,#1a233a);border:1px solid var(--line2);color:var(--accent)}
   .brand h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.2px}
   .brand .sub{font-size:11px;color:var(--faint);margin-top:1px}
   header .spacer{flex:1}
   header .btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  #updated{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
-  #updated .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
 
   button{cursor:pointer;border:1px solid var(--line2);background:var(--surface2);color:var(--txt);
     border-radius:var(--r-sm);padding:9px 14px;font-size:13px;font-family:inherit;font-weight:500;
@@ -1342,11 +1457,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .card:hover{border-color:var(--line2)}
   .card.dragging{opacity:.4}
   .card.drop-target{border-color:var(--accent);border-style:dashed}
-  .card .grip{position:absolute;top:14px;right:12px;color:var(--faint);cursor:grab;
-    display:flex;gap:2px;padding:4px;border-radius:6px}
+  .card .corner{position:absolute;top:11px;right:11px;display:flex;align-items:center;gap:6px;z-index:1}
+  .card .grip{color:var(--faint);cursor:grab;display:flex;gap:2px;padding:4px;border-radius:6px}
   .card .grip:hover{color:var(--muted);background:var(--surface2)}
   .card .grip:active{cursor:grabbing}
   .card .top{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-right:22px}
+  .card.has-topup .top{padding-right:96px}
   .ic{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;
     overflow:hidden;background:#fff;border:1px solid var(--line2);box-shadow:0 6px 18px -14px rgba(0,0,0,.9)}
   .ic img{width:100%;height:100%;object-fit:cover;display:block}
@@ -1367,7 +1483,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .metric .usage{font-size:14px;margin:-1px 0 7px;color:var(--muted)}
   .metric .usage .pct{font-size:18px;font-weight:700;color:var(--txt);margin-right:4px}
   .metric .usage .r{font-size:12.5px;color:var(--muted)}
-  .bar{height:8px;background:#0a1120;border-radius:20px;overflow:hidden;border:1px solid var(--line)}
+  .bar{height:8px;background:#141d31;border-radius:20px;overflow:hidden;border:1px solid var(--line)}
   .bar span{display:block;height:100%;border-radius:20px;transition:width .6s var(--ease)}
   .val{font-size:26px;font-weight:700}
   .val small{font-size:13px;color:var(--muted);font-weight:400;margin-left:5px}
@@ -1400,13 +1516,43 @@ HTML_PAGE = r"""<!DOCTYPE html>
     border-radius:var(--r);padding:24px;width:min(520px,96vw);max-height:92vh;overflow:auto;
     box-shadow:0 24px 60px -20px rgba(0,0,0,.8);animation:pop .22s var(--ease)}
   @keyframes pop{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
-  .modal h2{margin:0 0 4px;font-size:19px;font-weight:600}
-  .modal p.sub{margin:0 0 8px;color:var(--muted);font-size:13px}
+  .modal h2{margin:0 0 4px;font-size:19px;font-weight:600;letter-spacing:-.2px}
+  .modal p.sub{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
+  .modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+  .modal-x{width:34px;height:34px;padding:0;border-radius:9px;background:transparent;border:1px solid transparent;
+    color:var(--faint);display:grid;place-items:center;flex-shrink:0}
+  .modal-x:hover{color:var(--txt);border-color:var(--line2);background:var(--surface2);transform:none}
+  .modal-x svg{width:18px;height:18px}
   label{display:block;font-size:12.5px;margin:16px 0 6px;color:var(--muted);font-weight:500}
   input,select{width:100%;padding:11px;background:var(--bg2);border:1px solid var(--line2);
     border-radius:var(--r-sm);color:var(--txt);font-size:14px;font-family:inherit;transition:border-color .15s}
   input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(34,197,94,.15)}
-  .hint{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.6}
+  input::placeholder{color:var(--faint)}
+  .field{margin-top:18px}
+  .flabel{display:block;font-size:12px;margin:0 0 9px;color:var(--muted);font-weight:600;
+    letter-spacing:.3px;text-transform:uppercase}
+  .svc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .svc{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;
+    padding:13px 14px;border-radius:var(--r-sm);border:1px solid var(--line2);background:var(--bg2);
+    cursor:pointer;font-weight:400;
+    transition:border-color .16s var(--ease),background-color .16s var(--ease),box-shadow .16s var(--ease),transform .16s var(--ease)}
+  .svc:hover{border-color:var(--faint);transform:translateY(-1px)}
+  .svc img{width:26px;height:26px;border-radius:7px;margin-bottom:6px;object-fit:contain;background:#fff;padding:2px}
+  .svc-name{font-size:14px;font-weight:600;color:var(--txt)}
+  .svc-desc{font-size:11.5px;color:var(--faint);font-weight:400}
+  .svc.active{border-color:var(--accent);background:rgba(34,197,94,.1);box-shadow:0 0 0 3px rgba(34,197,94,.16)}
+  .svc.active .svc-desc{color:var(--muted)}
+  .svc:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .svc-grid.locked .svc{pointer-events:none;opacity:.45}
+  .svc-grid.locked .svc.active{opacity:1}
+  .card .reconnect{width:100%;justify-content:center;margin-top:10px}
+  .card .topup{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border-radius:7px;
+    border:1px solid var(--line2);background:var(--surface2);color:var(--muted);
+    font-size:11.5px;font-weight:500;line-height:1;text-decoration:none;white-space:nowrap;
+    transition:border-color .16s var(--ease),color .16s var(--ease)}
+  .card .topup:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+  .card .topup svg{width:14px;height:14px}
+  .hint{font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.6}
   .hint code{background:var(--bg2);padding:1px 6px;border-radius:5px;font-family:"Fira Code",monospace;font-size:11.5px}
   .modal .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
   .msg{margin-top:12px;font-size:13px}
@@ -1482,7 +1628,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
   <div class="spacer"></div>
   <div class="btns">
-    <span id="updated"></span>
+    <button class="ghost" onclick="toggleTheme()" id="btnTheme" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
     <button class="ghost" onclick="load(true)" id="btnRefresh">Atualizar agora</button>
     <button class="primary" onclick="openAdd()" id="btnAdd">Adicionar conta</button>
   </div>
@@ -1497,23 +1643,49 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </div>
 
 <div class="overlay" id="overlay">
-  <div class="modal">
-    <h2>Adicionar conta</h2>
-    <p class="sub">Escolha o servico. Nada e enviado para a internet alem do proprio servico.</p>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal_title">
+    <div class="modal-head">
+      <div>
+        <h2 id="modal_title">Adicionar conta</h2>
+        <p class="sub">Conecte um serviço para acompanhar uso e créditos em um só painel.</p>
+      </div>
+      <button class="modal-x" onclick="closeAdd()" aria-label="Fechar" title="Fechar" id="modal_close"></button>
+    </div>
 
-    <label>Servico</label>
-    <select id="f_type" onchange="onType()">
-      <option value="claude">Claude (limite 5h e semanal)</option>
-      <option value="codex">Codex / ChatGPT (limite 5h e semanal)</option>
-      <option value="deepseek">DeepSeek (saldo)</option>
-      <option value="openrouter">OpenRouter (creditos)</option>
-    </select>
+    <input type="hidden" id="f_type" value="claude">
+    <div class="field">
+      <span class="flabel">Serviço</span>
+      <div class="svc-grid" id="svc_grid" role="radiogroup" aria-label="Serviço">
+        <button type="button" class="svc" data-type="claude" role="radio" onclick="selectType('claude')">
+          <img src="/assets/integrations/claude-icon.webp" alt="" aria-hidden="true" decoding="async">
+          <span class="svc-name">Claude</span>
+          <span class="svc-desc">Limite 5h e semanal</span>
+        </button>
+        <button type="button" class="svc" data-type="codex" role="radio" onclick="selectType('codex')">
+          <img src="/assets/integrations/codex-icon.webp" alt="" aria-hidden="true" decoding="async">
+          <span class="svc-name">Codex</span>
+          <span class="svc-desc">ChatGPT · 5h e semanal</span>
+        </button>
+        <button type="button" class="svc" data-type="deepseek" role="radio" onclick="selectType('deepseek')">
+          <img src="/assets/integrations/deepseek-icon.webp" alt="" aria-hidden="true" decoding="async">
+          <span class="svc-name">DeepSeek</span>
+          <span class="svc-desc">Saldo da API</span>
+        </button>
+        <button type="button" class="svc" data-type="openrouter" role="radio" onclick="selectType('openrouter')">
+          <img src="/assets/integrations/openrouter-icon.webp" alt="" aria-hidden="true" decoding="async">
+          <span class="svc-name">OpenRouter</span>
+          <span class="svc-desc">Créditos da conta</span>
+        </button>
+      </div>
+    </div>
 
-    <label>Nome da conta (para voce diferenciar)</label>
-    <input id="f_label" placeholder="Ex: Codex Conta 1">
+    <div class="field">
+      <label class="flabel" for="f_label">Nome da conta</label>
+      <input id="f_label" placeholder="Ex.: Codex — Conta principal" autocomplete="off">
+    </div>
 
-    <div id="key_box">
-      <label>API Key</label>
+    <div id="key_box" class="field">
+      <label class="flabel" for="f_key">API Key</label>
       <input id="f_key" placeholder="cole a chave aqui" autocomplete="off">
     </div>
 
@@ -1543,6 +1715,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <script>
 let timer = null;
 let POLL = 15;          // cadencia base do cliente (o servidor respeita o limite de cada conta)
+let RECONNECT_ID = null; // id da conta em reconexao (null = adicionar nova)
 
 // ---- Icones SVG (Lucide) — sem emojis ------------------------------------
 const ICON = {
@@ -1561,14 +1734,33 @@ const ICON = {
   wallet:'<path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M16 12h4"/>',
   cpu:'<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
   link:'<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon:'<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
 };
 function svg(name, w){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${w?` style="width:${w}px;height:${w}px"`:''}>${ICON[name]||''}</svg>`; }
+
+function applyTheme(t){
+  t = (t === 'light') ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  try{ localStorage.setItem('ia-theme', t); }catch(e){}
+  const btn = document.getElementById('btnTheme');
+  if(btn) btn.innerHTML = svg(t === 'light' ? 'moon' : 'sun');
+}
+function toggleTheme(){
+  const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  applyTheme(cur === 'light' ? 'dark' : 'light');
+}
 const TYPEICON = {claude:'bot', codex:'cpu', deepseek:'activity', openrouter:'link'};
 const TYPELOGO = {
   claude:'/assets/integrations/claude-icon.webp',
   codex:'/assets/integrations/codex-icon.webp',
   deepseek:'/assets/integrations/deepseek-icon.webp',
   openrouter:'/assets/integrations/openrouter-icon.webp',
+};
+// paginas de recarga de credito (contas por saldo/creditos)
+const TOPUP = {
+  deepseek:'https://platform.deepseek.com/top_up',
+  openrouter:'https://openrouter.ai/settings/credits',
 };
 
 function providerMark(type){
@@ -1651,6 +1843,9 @@ function cardHTML(a){
   let inner;
   if(a.error){
     inner = `<div class="err">${esc(a.error)}</div>`;
+    if(a.reauth){
+      inner += `<button class="primary reconnect" onclick="reconnect('${a.id}')">${svg('refresh')} Reconectar</button>`;
+    }
   } else {
     inner = (a.metrics||[]).map(metricHTML).join('') || '<div class="err">Sem dados.</div>';
     if(a.stale){ inner += `<div class="stale">${svg('clock',13)} mostrando o último valor — atualizando…</div>`; }
@@ -1662,8 +1857,14 @@ function cardHTML(a){
           <button class="iconbtn danger" title="Remover conta" onclick="delAcc('${a.id}')">${svg('trash')}</button>
         </span>
       </div>`;
-  return `<div class="card" draggable="true" data-id="${a.id}">
-    <span class="grip" title="Arraste para reordenar">${svg('grip')}</span>
+  const topup = TOPUP[a.type]
+    ? `<a class="topup" href="${TOPUP[a.type]}" target="_blank" rel="noopener" title="Adicionar créditos">${svg('wallet',15)} Créditos</a>`
+    : '';
+  return `<div class="card${topup?' has-topup':''}" draggable="true" data-id="${a.id}">
+    <div class="corner">
+      ${topup}
+      <span class="grip" title="Arraste para reordenar">${svg('grip')}</span>
+    </div>
     <div class="top">
       <span class="ic i-${a.type}">${providerMark(a.type)}</span>
       <div style="min-width:0">
@@ -1697,10 +1898,8 @@ async function load(force){
     POLL = Math.max(10, Math.min(30, mn));
     // nao redesenha enquanto o usuario estiver arrastando um card
     if(!dragId) renderCards();
-    const u = document.getElementById('updated');
-    u.innerHTML = `<span class="dot"></span> atualizado ${d.updated_at||''}`;
   }catch(e){
-    document.getElementById('updated').textContent = 'erro ao atualizar';
+    console.error('erro ao atualizar', e);
   }
   if(timer) clearTimeout(timer);
   timer = setTimeout(load, POLL*1000);
@@ -1740,25 +1939,58 @@ function showLoginRetry(message){
   resetLoginUI();
   CURLOGIN = null;
   setMsg(message || 'Falha no login. Tente novamente.','bad');
-  document.getElementById('modal_actions').innerHTML = `<button class="primary" onclick="onType()">Tentar novamente</button>
-    <button class="ghost" onclick="closeAdd()">Cancelar</button>`;
+  document.getElementById('modal_actions').innerHTML = `<button class="primary" onclick="onType()">Tentar novamente</button>`;
 }
 
 function isLoopbackHost(){
   const h = window.location.hostname.toLowerCase();
   return h === 'localhost' || h === '::1' || h.startsWith('127.');
 }
+function isMobileDevice(){
+  return /Android|iPhone|iPad|iPod|Mobile|Opera Mini|IEMobile/i.test(navigator.userAgent || '');
+}
+
+function selectType(t){
+  document.getElementById('f_type').value = t;
+  document.querySelectorAll('#svc_grid .svc').forEach(el=>{
+    const on = el.dataset.type === t;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+  onType();
+}
 
 function openAdd(){
+  RECONNECT_ID = null;
   document.getElementById('overlay').classList.add('show');
+  document.getElementById('modal_title').textContent = 'Adicionar conta';
+  document.getElementById('svc_grid').classList.remove('locked');
   document.getElementById('modal_msg').textContent='';
   document.getElementById('f_label').value='';
   document.getElementById('f_key').value='';
   cancelCurrentLogin();
-  onType();
+  selectType('claude');
 }
+
+// Reconectar: reabre o popup travado no serviço da conta e atualiza as credenciais dela
+function reconnect(id){
+  const a = (LAST||[]).find(x=>x.id===id);
+  if(!a) return;
+  RECONNECT_ID = id;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('modal_title').textContent = 'Reconectar conta';
+  document.getElementById('modal_msg').textContent='';
+  document.getElementById('f_key').value='';
+  document.getElementById('f_label').value = a.label || '';
+  cancelCurrentLogin();
+  selectType(a.type);
+  document.getElementById('svc_grid').classList.add('locked');
+}
+
 function closeAdd(){
+  RECONNECT_ID = null;
   document.getElementById('overlay').classList.remove('show');
+  document.getElementById('svc_grid').classList.remove('locked');
   cancelCurrentLogin();
 }
 
@@ -1783,27 +2015,31 @@ function onType(){
     const links = t==='deepseek'
       ? 'Pegue em <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a>'
       : 'Pegue em <a href="https://openrouter.ai/settings/keys" target="_blank">openrouter.ai/settings/keys</a>';
-    cliBox.innerHTML = links + '. Para varias contas, adicione uma chave de cada vez.';
-    actions.innerHTML = `<button class="primary" onclick="submitAdd()">Salvar</button>
-      <button onclick="closeAdd()">Cancelar</button>`;
+    cliBox.innerHTML = links + '.';
+    actions.innerHTML = `<button class="primary" onclick="submitAdd()">Salvar</button>`;
   } else {
     keyBox.style.display='none';
     const nome = t==='codex' ? 'Codex' : 'Claude';
-    const codexRemoto = t==='codex' && !isLoopbackHost();
-    cliBox.innerHTML = codexRemoto
-      ? `O login <b>Neste PC</b> do Codex usa <code>localhost:1455</code> e so funciona quando o painel roda neste mesmo computador.<br>
-        Como voce esta acessando por servidor/domínio, use <b>No celular (QR)</b>.`
-      : `Como voce quer entrar na conta <b>${nome}</b>?<br>
-        Para monitorar <b>2 contas</b>, adicione uma e depois abra este popup de novo para a outra.`;
-    actions.innerHTML = codexRemoto ? `<div class="choice" style="width:100%">
+    const mobile = isMobileDevice();
+    if(t==='codex'){
+      // acesso por link: o login "Navegador" do Codex depende de localhost:1455, entao so o QR/link funciona
+      cliBox.innerHTML = `Entre na conta <b>Codex</b> escaneando o QR ou tocando no link, no aparelho onde você já usa o Codex.`;
+      actions.innerHTML = `<div class="choice" style="width:100%">
+        <button class="primary" onclick="startLogin('phone')">${svg('phone')} Entrar com QR / link</button>
+      </div>`;
+    } else if(mobile){
+      // no celular, o login do Claude é feito pelo navegador do próprio aparelho
+      cliBox.innerHTML = `Como você quer entrar na conta <b>${nome}</b>?`;
+      actions.innerHTML = `<div class="choice" style="width:100%">
+        <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Navegador</button>
+      </div>`;
+    } else {
+      cliBox.innerHTML = `Como você quer entrar na conta <b>${nome}</b>?`;
+      actions.innerHTML = `<div class="choice" style="width:100%">
+        <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Navegador</button>
         <button class="primary" onclick="startLogin('phone')">${svg('phone')} No celular (QR)</button>
-      </div>
-      <button class="ghost" onclick="closeAdd()">Cancelar</button>` : `<div class="choice" style="width:100%">
-        <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Neste PC</button>
-        <button class="primary" onclick="startLogin('phone')">${svg('phone')} No celular (QR)</button>
-      </div>
-      <button class="ghost" onclick="captureCurrent()" title="Usa a conta que ja esta logada no computador">Usar login atual</button>
-      <button class="ghost" onclick="closeAdd()">Cancelar</button>`;
+      </div>`;
+    }
   }
 }
 
@@ -1814,15 +2050,12 @@ async function submitAdd(){
   setMsg('Salvando...');
   try{
     const r = await fetch('/api/accounts/add',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type,label,api_key})});
+      body:JSON.stringify({type,label,api_key,target_id:RECONNECT_ID||undefined})});
     const d = await r.json();
     if(d.ok){ setMsg('Conta adicionada!','ok'); setTimeout(()=>{closeAdd();load();},600); }
     else { setMsg(d.error||'Erro.','bad'); }
   }catch(e){ setMsg('Erro de conexao.','bad'); }
 }
-
-// "Usar login atual" = captura a conta ja logada no CLI (sem abrir navegador)
-function captureCurrent(){ submitAdd(); }
 
 function resetLoginUI(){
   document.getElementById('login_step').innerHTML='';
@@ -1882,10 +2115,10 @@ async function startLogin(method){
   resetLoginUI();
   setMsg('Iniciando login...');
   document.getElementById('login_box').style.display='block';
-  document.getElementById('modal_actions').innerHTML = `<button onclick="closeAdd()">Cancelar</button>`;
+  document.getElementById('modal_actions').innerHTML = '';
   try{
     const r = await fetch('/api/login/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type,label,method,replace:true})});
+      body:JSON.stringify({type,label,method,replace:true,target_id:RECONNECT_ID||undefined})});
     const d = await r.json();
     if(!d.ok){ if(win) win.close(); showLoginRetry(d.error||'Erro.'); return; }
     CURLOGIN={id:d.id, mode:d.mode, method:d.method, shown:false, win:win};
@@ -1988,6 +2221,10 @@ document.getElementById('brandlogo').innerHTML = svg('activity',19);
 document.getElementById('emptylogo').innerHTML = svg('activity',28);
 document.getElementById('btnRefresh').insertAdjacentHTML('afterbegin', svg('refresh'));
 document.getElementById('btnAdd').insertAdjacentHTML('afterbegin', svg('plus'));
+document.getElementById('modal_close').innerHTML = svg('x');
+
+// sincroniza o icone do seletor de tema com o tema atual
+applyTheme(document.documentElement.getAttribute('data-theme'));
 
 // fecha o modal clicando fora
 document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeAdd(); });
