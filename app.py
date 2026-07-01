@@ -792,6 +792,17 @@ _login_lock = threading.Lock()
 _login_jobs = {}  # id -> job
 LOGIN_ACTIVE = ("starting", "awaiting", "working")
 
+
+def is_loopback_host(host_header):
+    host = (host_header or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("["):
+        host = host.split("]", 1)[0].strip("[]")
+    else:
+        host = host.split(":", 1)[0]
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -1150,6 +1161,10 @@ class Handler(BaseHTTPRequestHandler):
             save_config(cfg)
             self._send(200, {"ok": True})
         elif self.path == "/api/login/start":
+            if body.get("type") == "codex" and (body.get("method") or "browser") == "browser" and \
+                    not is_loopback_host(self.headers.get("Host", "")):
+                self._send(400, {"error": "No deploy, o login 'Neste PC' do Codex nao funciona porque o retorno usa localhost:1455. Use 'No celular (QR)'."})
+                return
             job, err = start_login(body.get("type"), (body.get("label") or "").strip(),
                                    body.get("method") or "browser", bool(body.get("replace")))
             if err:
@@ -1619,6 +1634,11 @@ function showLoginRetry(message){
     <button class="ghost" onclick="closeAdd()">Cancelar</button>`;
 }
 
+function isLoopbackHost(){
+  const h = window.location.hostname.toLowerCase();
+  return h === 'localhost' || h === '::1' || h.startsWith('127.');
+}
+
 function openAdd(){
   document.getElementById('overlay').classList.add('show');
   document.getElementById('modal_msg').textContent='';
@@ -1659,9 +1679,16 @@ function onType(){
   } else {
     keyBox.style.display='none';
     const nome = t==='codex' ? 'Codex' : 'Claude';
-    cliBox.innerHTML = `Como voce quer entrar na conta <b>${nome}</b>?<br>
-      Para monitorar <b>2 contas</b>, adicione uma e depois abra este popup de novo para a outra.`;
-    actions.innerHTML = `<div class="choice" style="width:100%">
+    const codexRemoto = t==='codex' && !isLoopbackHost();
+    cliBox.innerHTML = codexRemoto
+      ? `O login <b>Neste PC</b> do Codex usa <code>localhost:1455</code> e so funciona quando o painel roda neste mesmo computador.<br>
+        Como voce esta acessando por servidor/domínio, use <b>No celular (QR)</b>.`
+      : `Como voce quer entrar na conta <b>${nome}</b>?<br>
+        Para monitorar <b>2 contas</b>, adicione uma e depois abra este popup de novo para a outra.`;
+    actions.innerHTML = codexRemoto ? `<div class="choice" style="width:100%">
+        <button class="primary" onclick="startLogin('phone')">${svg('phone')} No celular (QR)</button>
+      </div>
+      <button class="ghost" onclick="closeAdd()">Cancelar</button>` : `<div class="choice" style="width:100%">
         <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Neste PC</button>
         <button class="primary" onclick="startLogin('phone')">${svg('phone')} No celular (QR)</button>
       </div>
@@ -1707,6 +1734,10 @@ function renderQR(text){
 async function startLogin(method){
   const type = document.getElementById('f_type').value;
   const label = document.getElementById('f_label').value;
+  if(type==='codex' && method==='browser' && !isLoopbackHost()){
+    showLoginRetry("No deploy, o login 'Neste PC' do Codex nao funciona porque o retorno usa localhost:1455. Use 'No celular (QR)'.");
+    return;
+  }
   // Claude no PC: quem abre o navegador somos nos. Abrimos a aba JA no clique
   // (senao o bloqueador de popup barra). Codex abre a janela sozinho.
   let win = null;
