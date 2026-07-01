@@ -857,6 +857,9 @@ def capture_claude():
 _login_lock = threading.Lock()
 _login_jobs = {}  # id -> job
 LOGIN_ACTIVE = ("starting", "awaiting", "working")
+# Apos um 429 no device-auth do Codex, segura novos pedidos ate este instante
+# (o OpenAI limita bastante o endpoint de device code).
+_codex_device_cooldown_until = 0.0
 
 
 def is_loopback_host(host_header):
@@ -978,6 +981,7 @@ def _refresh_login_jobs():
 # ---- Codex: roda o CLI e captura o resultado -----------------------------
 
 def _codex_worker(job):
+    global _codex_device_cooldown_until
     exe = shutil.which("codex")
     if not exe:
         job.status = "error"
@@ -1023,7 +1027,14 @@ def _codex_worker(job):
     else:
         tail = " ".join(job.lines[-4:]) if job.lines else ""
         job.status = "error"
-        job.message = f"Login nao concluido (codigo {rc}). {tail}".strip()
+        low = tail.lower()
+        if "429" in low or "too many requests" in low:
+            # OpenAI limitou o endpoint de device code: segura novas tentativas por um tempo.
+            _codex_device_cooldown_until = time.time() + 120
+            job.message = ("O OpenAI limitou os pedidos de login do Codex (429). "
+                           "Aguarde 1-2 minutos e tente de novo.")
+        else:
+            job.message = f"Login nao concluido (codigo {rc}). {tail}".strip()
 
 
 # ---- Claude: OAuth feito pelo proprio painel -----------------------------
@@ -1096,6 +1107,18 @@ def start_login(provider, label, method, replace=False, target_id=None):
     with _login_lock:
         _refresh_login_jobs()
         active = [j for j in _login_jobs.values() if j.status in LOGIN_ACTIVE]
+        # Reaproveita um login identico ja em andamento (mesmo provedor/metodo/alvo):
+        # evita disparar um novo device-auth do Codex e tomar 429 do OpenAI a cada clique.
+        for j in active:
+            if j.provider == provider and j.method == method and j.target_id == target_id \
+                    and (time.time() - j.started) < 300:
+                return j, None
+        # Respeita o cooldown apos um 429 no device-auth do Codex.
+        if provider == "codex" and method == "phone":
+            wait = int(_codex_device_cooldown_until - time.time())
+            if wait > 0:
+                return None, ("O OpenAI limitou os pedidos de login do Codex (429). "
+                              f"Aguarde ~{wait}s e tente de novo.")
         if active and not replace:
             return None, "Ja existe um login em andamento. Conclua ou cancele antes."
         for j in active:
@@ -2019,29 +2042,19 @@ function onType(){
       : 'Pegue em <a href="https://openrouter.ai/settings/keys" target="_blank">openrouter.ai/settings/keys</a>';
     cliBox.innerHTML = links + '.';
     actions.innerHTML = `<button class="primary" onclick="submitAdd()">Salvar</button>`;
-  } else {
+  } else if(t==='claude'){
     keyBox.style.display='none';
-    const nome = t==='codex' ? 'Codex' : 'Claude';
-    const mobile = isMobileDevice();
-    if(t==='codex'){
-      // acesso por link: o login "Navegador" do Codex depende de localhost:1455, entao so o QR/link funciona
-      cliBox.innerHTML = `Entre na conta <b>Codex</b> escaneando o QR ou tocando no link, no aparelho onde você já usa o Codex.`;
-      actions.innerHTML = `<div class="choice" style="width:100%">
-        <button class="primary" onclick="startLogin('phone')">${svg('phone')} Entrar com QR / link</button>
-      </div>`;
-    } else if(mobile){
-      // no celular, o login do Claude é feito pelo navegador do próprio aparelho
-      cliBox.innerHTML = `Como você quer entrar na conta <b>${nome}</b>?`;
-      actions.innerHTML = `<div class="choice" style="width:100%">
-        <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Navegador</button>
-      </div>`;
-    } else {
-      cliBox.innerHTML = `Como você quer entrar na conta <b>${nome}</b>?`;
-      actions.innerHTML = `<div class="choice" style="width:100%">
-        <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Navegador</button>
-        <button class="primary" onclick="startLogin('phone')">${svg('phone')} No celular (QR)</button>
-      </div>`;
-    }
+    cliBox.innerHTML = `Entre na sua conta <b>Claude</b> pelo navegador.`;
+    actions.innerHTML = `<div class="choice" style="width:100%">
+      <button class="primary" onclick="startLogin('browser')">${svg('monitor')} Login</button>
+    </div>`;
+  } else {
+    // codex: login por device-auth (QR/codigo). No PC mostra o QR; no celular, so o codigo/link.
+    keyBox.style.display='none';
+    cliBox.innerHTML = `Entre na sua conta <b>Codex</b>.`;
+    actions.innerHTML = `<div class="choice" style="width:100%">
+      <button class="primary" onclick="startLogin('phone')">${svg('monitor')} Login</button>
+    </div>`;
   }
 }
 
@@ -2077,16 +2090,14 @@ function renderQR(text){
   }catch(e){ box.innerHTML = '<div class="hint">(nao consegui gerar o QR — use o link abaixo)</div>'; }
 }
 
-async function copyDevCode(){
-  const code = document.getElementById('devcode').textContent.trim();
-  if(!code) return;
-  const btn = document.getElementById('copy_devcode');
+async function copyText(text){
+  if(!text) return false;
   try{
     if(navigator.clipboard && window.isSecureContext){
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(text);
     } else {
       const ta = document.createElement('textarea');
-      ta.value = code;
+      ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
@@ -2095,11 +2106,26 @@ async function copyDevCode(){
       document.execCommand('copy');
       ta.remove();
     }
-    btn.textContent = 'Copiado!';
-    setTimeout(()=>{ btn.textContent='Copiar código'; }, 1800);
-  }catch(e){
-    btn.textContent = 'Selecione e copie';
-    setTimeout(()=>{ btn.textContent='Copiar código'; }, 2200);
+    return true;
+  }catch(e){ return false; }
+}
+
+async function copyDevCode(){
+  const code = document.getElementById('devcode').textContent.trim();
+  if(!code) return;
+  const btn = document.getElementById('copy_devcode');
+  const ok = await copyText(code);
+  btn.textContent = ok ? 'Copiado!' : 'Selecione e copie';
+  setTimeout(()=>{ btn.textContent='Copiar código'; }, ok ? 1800 : 2200);
+}
+
+// "abrir login": copia o codigo do device automaticamente e deixa o link abrir a pagina
+function onOpenLogin(){
+  const code = (document.getElementById('devcode').textContent || '').trim();
+  if(code){
+    copyText(code);
+    const btn = document.getElementById('copy_devcode');
+    if(btn){ btn.textContent = 'Copiado!'; setTimeout(()=>{ btn.textContent='Copiar código'; }, 1800); }
   }
 }
 
@@ -2137,27 +2163,27 @@ async function pollLogin(){
 
   const step = document.getElementById('login_step');
   const linkDiv = document.getElementById('login_link');
-  const phone = CURLOGIN.method==='phone';
+  const mobile = isMobileDevice();
 
   // quando a URL fica disponivel, monta a tela (uma vez)
   if(d.url && !CURLOGIN.shown){
     CURLOGIN.shown=true;
-    if(phone){
-      renderQR(d.url);
-      linkDiv.innerHTML = `<a href="${d.url}" target="_blank">${svg('link',13)} abrir o link no próprio celular</a>`;
+    if(d.mode==='device'){
+      // Codex: QR so no PC (no celular ja estamos no aparelho). O link "abrir login"
+      // copia o codigo automaticamente e abre a pagina de login.
+      const qb = document.getElementById('qrbox');
+      if(mobile){ qb.style.display='none'; } else { qb.style.display='flex'; renderQR(d.url); }
+      linkDiv.innerHTML = `<a href="${d.url}" target="_blank" rel="noopener" onclick="onOpenLogin()">${svg('link',13)} abrir login</a>`;
     } else {
-      // no PC: para o Claude, direcionamos a aba que abrimos no clique (uma janela so).
-      // para o Codex, o proprio programa ja abriu a janela.
-      if(d.mode==='paste'){
-        if(CURLOGIN.win){ try{ CURLOGIN.win.location = d.url; }catch(e){ window.open(d.url,'_blank'); } }
-        else { window.open(d.url,'_blank'); }
-      }
+      // Claude (paste): direcionamos a aba que abrimos no clique (uma janela so).
+      if(CURLOGIN.win){ try{ CURLOGIN.win.location = d.url; }catch(e){ window.open(d.url,'_blank'); } }
+      else { window.open(d.url,'_blank'); }
       linkDiv.innerHTML = `Se o navegador não abriu, clique aqui:<br>
-        <a href="${d.url}" target="_blank">${svg('link',13)} Abrir página de login</a>`;
+        <a href="${d.url}" target="_blank" rel="noopener">${svg('link',13)} Abrir página de login</a>`;
     }
   }
 
-  // codigo de device (Codex no celular)
+  // codigo de device (Codex)
   if(d.mode==='device' && d.code){
     document.getElementById('devcode_box').style.display='block';
     document.getElementById('devcode').textContent = d.code;
@@ -2169,14 +2195,14 @@ async function pollLogin(){
   }
   if(d.status==='error'){ showLoginRetry(d.message||'Falha no login.'); return; }
 
-  // textos de instrucao + campo de colar (Claude)
+  // textos de instrucao + campo de colar
   if(d.mode==='paste'){
-    step.innerHTML = phone
-      ? '1) Escaneie o QR com o celular. &nbsp; 2) Faca login. &nbsp; 3) O celular vai mostrar um <b>codigo</b> — digite-o aqui embaixo.'
-      : '1) Faca login na janela que abriu. &nbsp; 2) O site vai mostrar um <b>codigo</b>. &nbsp; 3) Cole o codigo aqui embaixo.';
+    step.innerHTML = '1) Faça login na janela que abriu. &nbsp; 2) O site vai mostrar um <b>código</b>. &nbsp; 3) Cole o código aqui embaixo.';
     document.getElementById('code_box').style.display='block';
   } else if(d.mode==='device'){
-    step.innerHTML = '1) Escaneie o QR (ou abra o link) no celular. &nbsp; 2) Digite o codigo mostrado acima. &nbsp; 3) Aguarde — conclui sozinho.';
+    step.innerHTML = mobile
+      ? '1) Toque em <b>abrir login</b> (o código já é copiado). &nbsp; 2) Cole/confirme o código na página. &nbsp; 3) Aguarde — conclui sozinho.'
+      : '1) Escaneie o QR ou clique em <b>abrir login</b>. &nbsp; 2) Confirme o código mostrado acima. &nbsp; 3) Aguarde — conclui sozinho.';
   } else {
     step.innerHTML = 'Aguardando voce concluir o login na janela do navegador...';
   }
