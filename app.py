@@ -1168,6 +1168,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_add(body)
         elif self.path == "/api/accounts/delete":
             self._handle_delete(body)
+        elif self.path == "/api/accounts/rename":
+            self._handle_rename(body)
         elif self.path == "/api/accounts/reorder":
             self._handle_reorder(body)
         elif self.path == "/api/settings":
@@ -1240,6 +1242,18 @@ class Handler(BaseHTTPRequestHandler):
         save_config(cfg)
         _result_cache.pop(aid, None)
         self._send(200, {"ok": True, "removed": before - len(cfg["accounts"])})
+
+    def _handle_rename(self, body):
+        aid = body.get("id")
+        label = (body.get("label") or "").strip()[:80]
+        cfg = load_config()
+        for acc in cfg["accounts"]:
+            if acc.get("id") == aid:
+                acc["label"] = label or TYPE_LABELS.get(acc.get("type"), "Conta")
+                save_config(cfg)
+                self._send(200, {"ok": True, "label": acc["label"]})
+                return
+        self._send(404, {"error": "Conta nao encontrada."})
 
     def _handle_reorder(self, body):
         ids = body.get("ids") or []
@@ -1529,6 +1543,7 @@ const ICON = {
   refresh:'<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
   trash:'<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+  edit:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
   clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   grip:'<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
   check:'<path d="M20 6L9 17l-5-5"/>',
@@ -1556,6 +1571,7 @@ function providerMark(type){
 
 function color(p){ if(p>=90) return 'var(--bad)'; if(p>=70) return 'var(--warn)'; return 'var(--ok)'; }
 function fmtNum(v){ return (typeof v==='number') ? v.toLocaleString('pt-BR',{maximumFractionDigits:4}) : v; }
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function metricLabel(label){ return label === 'Limite semanal' ? 'Semanal' : label; }
 
@@ -1601,15 +1617,15 @@ function metricHTML(m){
     const p = Math.max(0, Math.min(100, m.percent));
     const reset = resetText(m);
     return `<div class="metric">
-      <div class="row"><span class="lbl">${metricLabel(m.label)}</span></div>
-      <div class="usage"><span class="pct mono">${m.percent}%</span>${reset?`<span class="r">${reset}</span>`:''}</div>
+      <div class="row"><span class="lbl">${esc(metricLabel(m.label))}</span></div>
+      <div class="usage"><span class="pct mono">${esc(m.percent)}%</span>${reset?`<span class="r">${esc(reset)}</span>`:''}</div>
       <div class="bar"><span style="width:${p}%;background:${color(p)}"></span></div>
     </div>`;
   }
   if(m.value !== undefined && m.value !== null){
     return `<div class="metric">
-      <div class="row"><span class="lbl">${m.label}</span></div>
-      <div class="val mono">${fmtNum(m.value)}<small>${m.unit||''}</small></div>
+      <div class="row"><span class="lbl">${esc(m.label)}</span></div>
+      <div class="val mono">${esc(fmtNum(m.value))}<small>${esc(m.unit||'')}</small></div>
     </div>`;
   }
   return '';
@@ -1618,7 +1634,7 @@ function metricHTML(m){
 function cardHTML(a){
   let inner;
   if(a.error){
-    inner = `<div class="err">${a.error}</div>`;
+    inner = `<div class="err">${esc(a.error)}</div>`;
   } else {
     inner = (a.metrics||[]).map(metricHTML).join('') || '<div class="err">Sem dados.</div>';
     if(a.stale){ inner += `<div class="stale">${svg('clock',13)} mostrando o último valor — atualizando…</div>`; }
@@ -1626,19 +1642,20 @@ function cardHTML(a){
   const foot = `<div class="cfoot">
        <span class="auto" title="Definido automaticamente conforme o limite de consultas deste serviço">${svg('clock',13)} auto a cada <b>${a.interval}s</b></span>
        <span class="acts">
-         <button class="iconbtn danger" title="Remover conta" onclick="delAcc('${a.id}')">${svg('trash')}</button>
-       </span>
-     </div>`;
+          <button class="iconbtn" title="Renomear conta" onclick="renameAcc('${a.id}')">${svg('edit')}</button>
+          <button class="iconbtn danger" title="Remover conta" onclick="delAcc('${a.id}')">${svg('trash')}</button>
+        </span>
+      </div>`;
   return `<div class="card" draggable="true" data-id="${a.id}">
     <span class="grip" title="Arraste para reordenar">${svg('grip')}</span>
     <div class="top">
       <span class="ic i-${a.type}">${providerMark(a.type)}</span>
       <div style="min-width:0">
-        <h3>${a.label||a.typeLabel}</h3>
-        <span class="badge">${a.typeLabel}</span>
+        <h3>${esc(a.label||a.typeLabel)}</h3>
+        <span class="badge">${esc(a.typeLabel)}</span>
       </div>
     </div>
-    ${a.detail?`<div class="detail">${a.detail}</div>`:''}
+    ${a.detail?`<div class="detail">${esc(a.detail)}</div>`:''}
     ${inner}
     ${foot}
   </div>`;
@@ -1900,6 +1917,21 @@ async function submitLoginCode(){
     if(!d.ok){ setMsg(d.error||'Erro ao enviar codigo.','bad'); return; }
     setMsg('');
   }catch(e){ setMsg('Erro de conexao.','bad'); }
+}
+
+async function renameAcc(id){
+  const acc = LAST.find(a=>a.id===id);
+  const atual = acc ? (acc.label || acc.typeLabel || '') : '';
+  const label = prompt('Novo nome da conta:', atual);
+  if(label === null) return;
+  try{
+    const r = await fetch('/api/accounts/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})});
+    const d = await r.json();
+    if(!d.ok){ alert(d.error||'Nao consegui renomear.'); return; }
+    if(acc) acc.label = d.label;
+    renderCards();
+    load();
+  }catch(e){ alert('Erro de conexao.'); }
 }
 
 async function delAcc(id){
