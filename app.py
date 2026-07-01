@@ -790,6 +790,7 @@ def capture_claude():
 
 _login_lock = threading.Lock()
 _login_jobs = {}  # id -> job
+LOGIN_ACTIVE = ("starting", "awaiting", "working")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -856,6 +857,27 @@ def _save_account(provider, label, creds):
     return acc["id"]
 
 
+def _cancel_login_job(job, message="Cancelado."):
+    job.status = "error"
+    job.message = message
+    try:
+        if job.proc and job.proc.poll() is None:
+            job.proc.kill()
+    except Exception:
+        pass
+
+
+def _refresh_login_jobs():
+    """Marca como encerrados processos que morreram sem atualizar o status."""
+    for job in _login_jobs.values():
+        try:
+            if job.status in LOGIN_ACTIVE and job.proc and job.proc.poll() is not None:
+                job.status = "error"
+                job.message = job.message or "Login interrompido. Tente novamente."
+        except Exception:
+            pass
+
+
 # ---- Codex: roda o CLI e captura o resultado -----------------------------
 
 def _codex_worker(job):
@@ -890,6 +912,8 @@ def _codex_worker(job):
                 job.code = c
 
     rc = job.proc.wait()
+    if job.status == "error":
+        return
     if rc == 0:
         creds, err = capture_codex()
         if err:
@@ -964,24 +988,21 @@ def _login_watchdog(job, timeout=600):
             return
         time.sleep(2)
     if job.status not in ("done", "error"):
-        job.status = "error"
-        job.message = "Tempo esgotado. Tente novamente."
-        try:
-            if job.proc:
-                job.proc.kill()
-        except Exception:
-            pass
+        _cancel_login_job(job, "Tempo esgotado. Tente novamente.")
 
 
-def start_login(provider, label, method):
+def start_login(provider, label, method, replace=False):
     if provider not in ("codex", "claude"):
         return None, "Login nao disponivel para este servico."
     if method not in ("browser", "phone"):
         method = "browser"
     with _login_lock:
-        for j in _login_jobs.values():
-            if j.status in ("starting", "awaiting", "working"):
-                return None, "Ja existe um login em andamento. Conclua ou cancele antes."
+        _refresh_login_jobs()
+        active = [j for j in _login_jobs.values() if j.status in LOGIN_ACTIVE]
+        if active and not replace:
+            return None, "Ja existe um login em andamento. Conclua ou cancele antes."
+        for j in active:
+            _cancel_login_job(j, "Cancelado por nova tentativa.")
         job = LoginJob(provider, label, method)
         _login_jobs[job.id] = job
     if job.kind == "oauth":       # claude
@@ -1009,13 +1030,7 @@ def login_submit_code(job_id, code):
 def login_cancel(job_id):
     job = _login_jobs.get(job_id)
     if job:
-        job.status = "error"
-        job.message = "Cancelado."
-        try:
-            if job.proc:
-                job.proc.kill()
-        except Exception:
-            pass
+        _cancel_login_job(job)
 
 
 # --------------------------------------------------------------------------
@@ -1136,7 +1151,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
         elif self.path == "/api/login/start":
             job, err = start_login(body.get("type"), (body.get("label") or "").strip(),
-                                   body.get("method") or "browser")
+                                   body.get("method") or "browser", bool(body.get("replace")))
             if err:
                 self._send(400, {"error": err})
             else:
@@ -1590,17 +1605,31 @@ function setupDrag(){
 
 let CURLOGIN = null; // {id, mode, opened}
 
+function cancelCurrentLogin(){
+  const cur = CURLOGIN;
+  CURLOGIN = null;
+  if(cur){ fetch('/api/login/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:cur.id})}); }
+}
+
+function showLoginRetry(message){
+  resetLoginUI();
+  CURLOGIN = null;
+  setMsg(message || 'Falha no login. Tente novamente.','bad');
+  document.getElementById('modal_actions').innerHTML = `<button class="primary" onclick="onType()">Tentar novamente</button>
+    <button class="ghost" onclick="closeAdd()">Cancelar</button>`;
+}
+
 function openAdd(){
   document.getElementById('overlay').classList.add('show');
   document.getElementById('modal_msg').textContent='';
   document.getElementById('f_label').value='';
   document.getElementById('f_key').value='';
-  CURLOGIN=null;
+  cancelCurrentLogin();
   onType();
 }
 function closeAdd(){
   document.getElementById('overlay').classList.remove('show');
-  if(CURLOGIN){ fetch('/api/login/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CURLOGIN.id})}); CURLOGIN=null; }
+  cancelCurrentLogin();
 }
 
 function setMsg(txt, kind){ const m=document.getElementById('modal_msg'); m.className='msg'+(kind?(' '+kind):''); m.innerHTML=txt||''; }
@@ -1612,7 +1641,7 @@ function onType(){
   const loginBox = document.getElementById('login_box');
   const actions = document.getElementById('modal_actions');
   // reseta area de login
-  CURLOGIN=null; loginBox.style.display='none';
+  cancelCurrentLogin(); loginBox.style.display='none';
   document.getElementById('login_step').innerHTML='';
   document.getElementById('login_link').innerHTML='';
   document.getElementById('code_box').style.display='none';
@@ -1688,13 +1717,13 @@ async function startLogin(method){
   document.getElementById('modal_actions').innerHTML = `<button onclick="closeAdd()">Cancelar</button>`;
   try{
     const r = await fetch('/api/login/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({type,label,method})});
+      body:JSON.stringify({type,label,method,replace:true})});
     const d = await r.json();
-    if(!d.ok){ if(win) win.close(); setMsg(d.error||'Erro.','bad'); onType(); return; }
+    if(!d.ok){ if(win) win.close(); showLoginRetry(d.error||'Erro.'); return; }
     CURLOGIN={id:d.id, mode:d.mode, method:d.method, shown:false, win:win};
     setMsg('');
     pollLogin();
-  }catch(e){ if(win) win.close(); setMsg('Erro de conexao.','bad'); }
+  }catch(e){ if(win) win.close(); showLoginRetry('Erro de conexao.'); }
 }
 
 async function pollLogin(){
@@ -1735,7 +1764,7 @@ async function pollLogin(){
     resetLoginUI(); setMsg('Login concluído! ✓','ok'); CURLOGIN=null;
     setTimeout(()=>{closeAdd();load();}, 800); return;
   }
-  if(d.status==='error'){ setMsg((d.message||'Falha no login.'),'bad'); return; }
+  if(d.status==='error'){ showLoginRetry(d.message||'Falha no login.'); return; }
 
   // textos de instrucao + campo de colar (Claude)
   if(d.mode==='paste'){
