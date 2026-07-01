@@ -168,13 +168,20 @@ def http_json(url, method="GET", headers=None, data=None, timeout=25):
         return 0, {"_error": str(e)}
 
 
-def jwt_exp(token):
-    """Le o 'exp' de um JWT sem validar assinatura. Retorna timestamp ou None."""
+def jwt_payload(token):
+    """Le o payload de um JWT sem validar assinatura. Retorna dict vazio se falhar."""
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
-        data = json.loads(base64.urlsafe_b64decode(payload))
-        return data.get("exp")
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return {}
+
+
+def jwt_exp(token):
+    """Le o 'exp' de um JWT sem validar assinatura. Retorna timestamp ou None."""
+    try:
+        return jwt_payload(token).get("exp")
     except Exception:
         return None
 
@@ -317,6 +324,33 @@ def provider_claude(acc):
 # Provedor: Codex / ChatGPT (limite de 5h e semanal)
 # --------------------------------------------------------------------------
 
+def _codex_claims(creds):
+    payload = jwt_payload(creds.get("id_token") or "")
+    auth = payload.get("https://api.openai.com/auth") or {}
+    profile = payload.get("https://api.openai.com/profile") or {}
+    return payload, auth, profile
+
+
+def _codex_account_id(creds):
+    _, auth, _ = _codex_claims(creds)
+    for value in (creds.get("account_id"), auth.get("chatgpt_account_id"), auth.get("account_id")):
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _codex_detail(creds, usage):
+    usage = usage if isinstance(usage, dict) else {}
+    payload, auth, profile = _codex_claims(creds)
+    email = usage.get("email") or payload.get("email") or profile.get("email")
+    plan = usage.get("plan_type") or auth.get("chatgpt_plan_type")
+    if isinstance(plan, dict):
+        plan = plan.get("type") or plan.get("name")
+    if plan:
+        plan = " ".join(x.capitalize() for x in str(plan).replace("-", "_").split("_") if x)
+    return " ".join(x for x in [email, ("- " + plan) if plan else ""] if x)
+
+
 def codex_refresh(account_id, creds):
     rt = creds.get("refresh_token")
     if not rt:
@@ -336,7 +370,10 @@ def codex_refresh(account_id, creds):
             "access_token": j["access_token"],
             "refresh_token": j.get("refresh_token", rt),
             "id_token": j.get("id_token", creds.get("id_token")),
+            "account_id": j.get("account_id") or creds.get("account_id"),
         }
+        if not new.get("account_id"):
+            new["account_id"] = _codex_account_id(new)
         update_account_creds(account_id, new)
         creds.update(new)
         return creds
@@ -355,41 +392,120 @@ def _codex_install_id():
 
 
 def codex_headers(creds):
-    acc = creds.get("account_id", "")
     h = {
         "Authorization": "Bearer " + creds.get("access_token", ""),
-        "chatgpt-account-id": acc,
-        "ChatGPT-Account-Id": acc,
         "originator": "codex_cli_rs",
         "User-Agent": "codex_cli_rs",
         "Accept": "application/json",
     }
+    acc = _codex_account_id(creds)
+    if acc:
+        h["chatgpt-account-id"] = acc
+        h["ChatGPT-Account-Id"] = acc
     iid = _codex_install_id()
     if iid:
         h["x-codex-installation-id"] = iid
     return h
 
 
+def _codex_window_label(fallback, win):
+    if not isinstance(win, dict):
+        return fallback
+    seconds = win.get("limit_window_seconds")
+    minutes = win.get("window_minutes")
+    if minutes is None:
+        minutes = win.get("windowDurationMins")
+    try:
+        seconds = int(seconds if seconds is not None else 0)
+        if seconds <= 0 and minutes is not None:
+            seconds = int(minutes or 0) * 60
+    except Exception:
+        seconds = 0
+    if seconds >= 604800:
+        return "Limite semanal"
+    if seconds >= 86400:
+        days = round(seconds / 86400)
+        return f"Limite {days}d"
+    if seconds >= 3600:
+        hours = round(seconds / 3600)
+        return f"Limite {hours}h"
+    return fallback
+
+
+def _codex_window_metric(label, win):
+    if not isinstance(win, dict):
+        return None
+    percent = win.get("used_percent")
+    if percent is None:
+        percent = win.get("usedPercent")
+    if percent is None:
+        return None
+    try:
+        percent = round(float(str(percent).strip().rstrip("%")), 1)
+    except Exception:
+        return None
+    reset = win.get("reset_at")
+    if reset is None:
+        reset = win.get("resets_at")
+    if reset is None:
+        reset = win.get("resetsAt")
+    if reset is None and win.get("reset_after_seconds") is not None:
+        try:
+            reset = time.time() + int(win.get("reset_after_seconds") or 0)
+        except Exception:
+            reset = None
+    return {"label": _codex_window_label(label, win), "percent": percent, "reset": fmt_reset(reset)}
+
+
 def _codex_parse(j):
-    """Extrai % de uso 5h/semanal do formato /codex/usage (rate_limit.*_window)."""
+    """Extrai % de uso dos formatos atuais/antigos do endpoint de uso do Codex."""
     metrics = []
-    rl = j.get("rate_limit") or {}
 
     def add(label, win):
-        if not win or win.get("used_percent") is None:
-            return
-        metrics.append({
-            "label": label,
-            "percent": round(float(win.get("used_percent") or 0), 1),
-            "reset": fmt_reset(win.get("reset_at")),
-        })
+        m = _codex_window_metric(label, win)
+        if m:
+            metrics.append(m)
 
-    add("Limite 5h", rl.get("primary_window"))
-    add("Limite semanal", rl.get("secondary_window"))
+    def add_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return
+        add("Limite 5h", snapshot.get("primary") or snapshot.get("primary_window"))
+        add("Limite semanal", snapshot.get("secondary") or snapshot.get("secondary_window"))
+
+    # Formato cru do backend atual: { rate_limit: { primary_window, secondary_window } }
+    add_snapshot(j.get("rate_limit") or {})
+
+    # Formato ja normalizado pelo app-server do Codex: { rate_limits: { primary, secondary } }
+    rate_limits = j.get("rate_limits")
+    if isinstance(rate_limits, dict):
+        add_snapshot(rate_limits)
+    elif isinstance(rate_limits, list):
+        preferred = next((x for x in rate_limits if isinstance(x, dict) and x.get("limit_id") == "codex"), None)
+        add_snapshot(preferred or (rate_limits[0] if rate_limits else {}))
+
+    by_id = j.get("rate_limits_by_limit_id") or {}
+    if isinstance(by_id, dict):
+        add_snapshot(by_id.get("codex") or {})
+
     return metrics
 
 
-CODEX_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
+CODEX_USAGE_URLS = [
+    "https://chatgpt.com/backend-api/wham/usage",       # Codex CLI atual
+    "https://chatgpt.com/backend-api/codex/usage",      # fallback antigo
+]
+
+
+def codex_usage_request(creds):
+    last = (0, {"_error": "Nao consultei o Codex."})
+    for url in CODEX_USAGE_URLS:
+        status, j = http_json(url, headers=codex_headers(creds))
+        last = (status, j)
+        # Endpoint antigo/novo: so tenta o proximo quando o caminho nao existe.
+        if status in (404, 405):
+            continue
+        return status, j
+    return last
 
 
 def provider_codex(acc):
@@ -406,23 +522,20 @@ def provider_codex(acc):
         return isinstance(x, dict) and isinstance(x.get("_raw"), str) and \
             ("<html" in x["_raw"].lower() or x["_raw"].lstrip().startswith("<!"))
 
-    status, j = http_json(CODEX_USAGE_URL, headers=codex_headers(creds))
+    status, j = codex_usage_request(creds)
     # 401 (ou 403 com erro JSON de token) = token vencido -> renova e tenta de novo.
     # 403 com pagina HTML = bloqueio temporario do Cloudflare (nao adianta renovar).
     token_problem = status == 401 or (status == 403 and isinstance(j, dict) and j.get("error"))
     if token_problem and codex_refresh(acc["id"], creds):
-        status, j = http_json(CODEX_USAGE_URL, headers=codex_headers(creds))
+        status, j = codex_usage_request(creds)
 
     if status == 200 and isinstance(j, dict):
         metrics = _codex_parse(j)
-        detail = None
-        email = j.get("email")
-        plan = j.get("plan_type")
-        if email or plan:
-            detail = " ".join(x for x in [email, ("- " + str(plan).capitalize()) if plan else ""] if x)
+        detail = _codex_detail(creds, j)
         if metrics:
             return {"metrics": metrics, "kind": "percent", "detail": detail}
-        return {"error": "Codex respondeu, mas sem dados de limite. Talvez o plano nao tenha limite de uso."}
+        keys = ", ".join(sorted(k for k in j.keys() if not k.startswith("_"))[:6])
+        return {"error": f"Codex respondeu, mas sem janelas de limite ({keys or 'sem dados'})."}
 
     if status == 429 or is_html(j) or (status == 403 and not (isinstance(j, dict) and j.get("error"))):
         return {"error": "Codex limitou as consultas por instantes. Volta sozinho.", "transient": True}
@@ -638,6 +751,8 @@ def capture_codex():
         }
         if not creds["access_token"]:
             return None, "Login do Codex incompleto. Faca login novamente."
+        if not creds.get("account_id"):
+            creds["account_id"] = _codex_account_id(creds)
         return creds, None
     except Exception as e:
         return None, f"Erro lendo login do Codex: {e}"
