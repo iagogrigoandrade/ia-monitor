@@ -1116,14 +1116,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
     --ease:cubic-bezier(.2,.7,.3,1);
   }
-  *{box-sizing:border-box}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html{-webkit-text-size-adjust:100%}
   body{margin:0;font-family:"Fira Sans","Segoe UI",Roboto,system-ui,sans-serif;
     background:radial-gradient(1200px 600px at 80% -10%, #16203a 0%, var(--bg) 55%) fixed;
-    color:var(--txt);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+    color:var(--txt);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden}
   .mono{font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
 
-  header{display:flex;align-items:center;gap:14px;padding:16px clamp(16px,4vw,28px);
+  header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:12px clamp(12px,4vw,28px);
     border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;
     background:rgba(15,23,42,.82);backdrop-filter:saturate(140%) blur(10px)}
   .brand{display:flex;align-items:center;gap:11px}
@@ -1132,12 +1132,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .brand h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.2px}
   .brand .sub{font-size:11px;color:var(--faint);margin-top:1px}
   header .spacer{flex:1}
-  #updated{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  header .btns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  #updated{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
   #updated .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
 
   button{cursor:pointer;border:1px solid var(--line2);background:var(--surface2);color:var(--txt);
     border-radius:var(--r-sm);padding:9px 14px;font-size:13px;font-family:inherit;font-weight:500;
-    display:inline-flex;align-items:center;gap:7px;transition:all .18s var(--ease)}
+    display:inline-flex;align-items:center;gap:7px;transition:all .18s var(--ease);touch-action:manipulation}
   button:hover{border-color:var(--accent);transform:translateY(-1px)}
   button:active{transform:translateY(0)}
   button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -1149,7 +1150,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   button.danger:hover{border-color:var(--bad);background:rgba(239,68,68,.08)}
 
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
-    gap:16px;padding:clamp(16px,4vw,28px);max-width:1400px;margin:0 auto;align-items:stretch}
+    gap:16px;padding:clamp(12px,4vw,28px);max-width:1400px;margin:0 auto;align-items:stretch}
   .card{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);
     border-radius:var(--r);padding:18px 18px 14px;position:relative;box-shadow:var(--shadow);
     display:flex;flex-direction:column;min-height:250px;
@@ -1190,8 +1191,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .cfoot .auto{font-size:11.5px;color:var(--faint);display:flex;align-items:center;gap:6px}
   .cfoot .auto b{color:var(--muted);font-weight:600}
   .cfoot .acts{display:flex;gap:4px}
-  .iconbtn{width:28px;height:28px;padding:0;border-radius:7px;background:transparent;border:1px solid transparent;
-    color:var(--faint);display:grid;place-items:center}
+  .iconbtn{width:36px;height:36px;padding:0;border-radius:8px;background:transparent;border:1px solid transparent;
+    color:var(--faint);display:grid;place-items:center;flex-shrink:0;touch-action:manipulation}
   .iconbtn:hover{color:var(--txt);border-color:var(--line2);background:var(--surface2);transform:none}
   .iconbtn.danger:hover{color:var(--bad);border-color:#4b2226}
   .iconbtn svg{width:15px;height:15px}
@@ -1233,6 +1234,49 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .choice button svg{width:22px;height:22px}
   .steps{font-size:13px;line-height:1.7;color:var(--muted)}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  /* ---- tablet / celular grande ------------------------------------------- */
+  @media (max-width:768px){
+    header{gap:10px}
+    header .spacer{display:none}
+    .brand .sub{display:none}
+    button{padding:8px 12px;font-size:12.5px}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+    .card{min-height:220px}
+  }
+  /* ---- celular pequeno --------------------------------------------------- */
+  @media (max-width:480px){
+    header{padding:10px 12px;gap:8px}
+    header .btns{width:100%;justify-content:space-between}
+    header .btns button{flex:1}
+    #btnRefresh{min-width:0;padding:9px 8px;font-size:12px;justify-content:center}
+    #btnAdd{min-width:0;padding:9px 8px;font-size:12px;justify-content:center}
+    .grid{grid-template-columns:1fr;gap:12px;padding:12px}
+    .card{padding:14px 14px 10px;min-height:200px;border-radius:12px}
+    .card .top{margin-bottom:10px}
+    .card h3{font-size:14px}
+    .card .badge{font-size:10px}
+    .card .detail{font-size:11px;margin:-4px 0 10px 42px}
+    .val{font-size:22px}
+    .val small{font-size:11.5px}
+    .metric{margin:10px 0}
+    .metric .row{font-size:12px}
+    .err{font-size:12px;padding:8px 10px}
+    .cfoot{gap:6px;padding-top:8px}
+    .cfoot .auto{font-size:10.5px}
+    .iconbtn{width:34px;height:34px}
+    .modal{padding:18px;border-radius:12px}
+    .modal h2{font-size:17px}
+    .modal p.sub{font-size:12px}
+    label{font-size:12px;margin:12px 0 4px}
+    input,select{padding:10px;font-size:16px}
+    .devcode{font-size:22px;letter-spacing:2px;padding:10px}
+    #qrbox svg{width:170px;height:170px}
+    .choice button{padding:14px 10px;min-width:130px;font-size:12px}
+    .overlay{padding:10px}
+    .empty{padding:40px 16px}
+    .empty h2{font-size:16px}
+  }
+
 </style>
 <script src="/qrcode.min.js"></script>
 </head>
@@ -1246,9 +1290,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="spacer"></div>
-  <span class="pill" id="updated"></span>
-  <button class="ghost" onclick="load(true)" id="btnRefresh">Atualizar agora</button>
-  <button class="primary" onclick="openAdd()" id="btnAdd">Adicionar conta</button>
+  <div class="btns">
+    <span id="updated"></span>
+    <button class="ghost" onclick="load(true)" id="btnRefresh">Atualizar agora</button>
+    <button class="primary" onclick="openAdd()" id="btnAdd">Adicionar conta</button>
+  </div>
 </header>
 
 <div id="grid" class="grid"></div>
