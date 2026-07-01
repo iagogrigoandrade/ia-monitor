@@ -309,12 +309,14 @@ def provider_claude(acc):
             "label": "Limite 5h",
             "percent": round(float(five.get("utilization") or 0), 1),
             "reset": fmt_reset(five.get("resets_at")),
+            "resetAt": five.get("resets_at"),
         })
     if seven:
         metrics.append({
             "label": "Limite semanal",
             "percent": round(float(seven.get("utilization") or 0), 1),
             "reset": fmt_reset(seven.get("resets_at")),
+            "resetAt": seven.get("resets_at"),
         })
 
     detail = _claude_profile(acc["id"], token)
@@ -455,7 +457,8 @@ def _codex_window_metric(label, win):
             reset = time.time() + int(win.get("reset_after_seconds") or 0)
         except Exception:
             reset = None
-    return {"label": _codex_window_label(label, win), "percent": percent, "reset": fmt_reset(reset)}
+    return {"label": _codex_window_label(label, win), "percent": percent,
+            "reset": fmt_reset(reset), "resetAt": reset}
 
 
 def _codex_parse(j):
@@ -1341,6 +1344,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .metric .row .lbl{color:var(--muted)}
   .metric .row .pct{font-weight:600}
   .metric .row .r{color:var(--faint);font-size:11px;font-weight:400}
+  .metric .usage{font-size:14px;margin:-1px 0 7px;color:var(--muted)}
+  .metric .usage .pct{font-size:18px;font-weight:700;color:var(--txt);margin-right:4px}
+  .metric .usage .r{font-size:12.5px;color:var(--muted)}
   .bar{height:8px;background:#0a1120;border-radius:20px;overflow:hidden;border:1px solid var(--line)}
   .bar span{display:block;height:100%;border-radius:20px;transition:width .6s var(--ease)}
   .val{font-size:26px;font-weight:700}
@@ -1423,6 +1429,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .val small{font-size:11.5px}
     .metric{margin:10px 0}
     .metric .row{font-size:12px}
+    .metric .usage .pct{font-size:16px}
+    .metric .usage .r{font-size:12px}
     .err{font-size:12px;padding:8px 10px}
     .cfoot{gap:6px;padding-top:8px}
     .cfoot .auto{font-size:10.5px}
@@ -1549,12 +1557,52 @@ function providerMark(type){
 function color(p){ if(p>=90) return 'var(--bad)'; if(p>=70) return 'var(--warn)'; return 'var(--ok)'; }
 function fmtNum(v){ return (typeof v==='number') ? v.toLocaleString('pt-BR',{maximumFractionDigits:4}) : v; }
 
+function metricLabel(label){ return label === 'Limite semanal' ? 'Semanal' : label; }
+
+function resetDate(value){
+  if(value === undefined || value === null || value === '') return null;
+  if(typeof value === 'number') return new Date(value < 1e12 ? value * 1000 : value);
+  const raw = String(value).trim();
+  if(/^\d+(\.\d+)?$/.test(raw)){
+    const n = Number(raw);
+    return new Date(n < 1e12 ? n * 1000 : n);
+  }
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function resetRelative(date){
+  const secs = Math.floor((date.getTime() - Date.now()) / 1000);
+  if(secs <= 0) return 'agora';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if(d > 0) return `em ${d}d ${h}h`;
+  if(h > 0) return `em ${h}h ${m}m`;
+  return `em ${m}m`;
+}
+
+function resetAbsolute(date){
+  const mins = Math.floor((date.getTime() - Date.now()) / 60000);
+  if(mins < 24 * 60){
+    return date.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  }
+  return date.toLocaleString('pt-BR',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}).replace(',', '');
+}
+
+function resetText(m){
+  const d = resetDate(m.resetAt);
+  if(!d) return m.reset || '';
+  return `${resetRelative(d)} (${resetAbsolute(d)})`;
+}
+
 function metricHTML(m){
   if(m.percent !== undefined && m.percent !== null){
     const p = Math.max(0, Math.min(100, m.percent));
+    const reset = resetText(m);
     return `<div class="metric">
-      <div class="row"><span class="lbl">${m.label}</span>
-        <span><span class="pct mono">${m.percent}%</span> ${m.reset?`<span class="r">· ${m.reset}</span>`:''}</span></div>
+      <div class="row"><span class="lbl">${metricLabel(m.label)}</span></div>
+      <div class="usage"><span class="pct mono">${m.percent}%</span>${reset?`<span class="r">${reset}</span>`:''}</div>
       <div class="bar"><span style="width:${p}%;background:${color(p)}"></span></div>
     </div>`;
   }
