@@ -1403,7 +1403,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Monitor de IA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1447,7 +1447,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
     color:var(--txt);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden}
   .mono{font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
 
-  header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:12px clamp(12px,4vw,28px);
+  header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;
+    padding:max(12px,env(safe-area-inset-top)) max(clamp(12px,4vw,28px),env(safe-area-inset-right)) 12px max(clamp(12px,4vw,28px),env(safe-area-inset-left));
     border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;
     background:rgba(27,36,56,.82);backdrop-filter:saturate(140%) blur(10px)}
   .brand{display:flex;align-items:center;gap:11px}
@@ -1472,7 +1473,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   button.danger:hover{border-color:var(--bad);background:rgba(239,68,68,.08)}
 
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
-    gap:16px;padding:clamp(12px,4vw,28px);max-width:1400px;margin:0 auto;align-items:stretch}
+    gap:16px;padding:clamp(12px,4vw,28px);max-width:1400px;margin:0 auto;align-items:stretch;
+    padding-bottom:max(clamp(12px,4vw,28px),calc(env(safe-area-inset-bottom) + 12px));
+    padding-left:max(clamp(12px,4vw,28px),env(safe-area-inset-left));
+    padding-right:max(clamp(12px,4vw,28px),env(safe-area-inset-right))}
   .card{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line);
     border-radius:var(--r);padding:18px 18px 14px;position:relative;box-shadow:var(--shadow);
     display:flex;flex-direction:column;min-height:250px;
@@ -1538,7 +1542,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .overlay.show{display:flex;animation:fade .2s var(--ease)}
   @keyframes fade{from{opacity:0}to{opacity:1}}
   .modal{background:linear-gradient(180deg,var(--surface),var(--bg2));border:1px solid var(--line2);
-    border-radius:var(--r);padding:24px;width:min(520px,96vw);max-height:92vh;overflow:auto;
+    border-radius:var(--r);padding:24px;width:min(520px,96vw);max-height:92vh;max-height:92dvh;
+    overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
     box-shadow:0 24px 60px -20px rgba(0,0,0,.8);animation:pop .22s var(--ease)}
   @keyframes pop{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
   .modal h2{margin:0 0 4px;font-size:19px;font-weight:600;letter-spacing:-.2px}
@@ -1568,6 +1573,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .svc.active{border-color:var(--accent);background:rgba(34,197,94,.1);box-shadow:0 0 0 3px rgba(34,197,94,.16)}
   .svc.active .svc-desc{color:var(--muted)}
   .svc:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .svc:active{transform:scale(.985)}
   .svc-grid.locked .svc{pointer-events:none;opacity:.45}
   .svc-grid.locked .svc.active{opacity:1}
   .card .reconnect{width:100%;justify-content:center;margin-top:10px}
@@ -1599,44 +1605,61 @@ HTML_PAGE = r"""<!DOCTYPE html>
     header{gap:10px}
     header .spacer{display:none}
     .brand .sub{display:none}
-    button{padding:8px 12px;font-size:12.5px}
-    .grid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
-    .card{min-height:220px}
+    button{padding:9px 13px;font-size:12.5px}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+    .card{min-height:210px}
   }
-  /* ---- celular pequeno --------------------------------------------------- */
-  @media (max-width:480px){
-    header{padding:10px 12px;gap:8px}
-    header .btns{width:100%;justify-content:space-between}
-    header .btns button{flex:1}
-    #btnRefresh{min-width:0;padding:9px 8px;font-size:12px;justify-content:center}
-    #btnAdd{min-width:0;padding:9px 8px;font-size:12px;justify-content:center}
-    .grid{grid-template-columns:1fr;gap:12px;padding:12px}
-    .card{padding:14px 14px 10px;min-height:200px;border-radius:12px}
-    .card .top{margin-bottom:10px}
-    .card h3{font-size:14px}
-    .card .badge{font-size:10px}
+  /* ---- celular (bottom sheet + alvos de toque maiores) ------------------- */
+  @media (max-width:600px){
+    /* header numa linha so: "Monitor de IA" a esquerda, so os icones a direita */
+    header{gap:8px;flex-wrap:nowrap}
+    header .spacer{display:block;flex:1}
+    .brand{min-width:0}
+    .brand h1{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    header .btns{gap:8px;flex:0 0 auto}
+    .btn-label{display:none}
+    header .btns button{width:44px;height:44px;min-height:44px;padding:0;justify-content:center;flex:0 0 auto;gap:0}
+    header .btns button svg{width:18px;height:18px;margin:0}
+    .grid{grid-template-columns:1fr;gap:12px}
+    .card{padding:15px 15px 11px;min-height:auto;border-radius:14px}
+    .card.has-topup .top{padding-right:110px}
+    .card h3{font-size:14.5px}
     .card .detail{font-size:11px;margin:-4px 0 10px 48px}
     .val{font-size:22px}
     .val small{font-size:11.5px}
-    .metric{margin:10px 0}
-    .metric .row{font-size:12px}
-    .metric .usage .pct{font-size:16px}
-    .metric .usage .r{font-size:12px}
-    .err{font-size:12px;padding:8px 10px}
-    .cfoot{gap:6px;padding-top:8px}
-    .cfoot .auto{font-size:10.5px}
-    .iconbtn{width:34px;height:34px}
-    .modal{padding:18px;border-radius:12px}
-    .modal h2{font-size:17px}
-    .modal p.sub{font-size:12px}
+    .metric{margin:11px 0}
+    .metric .row{font-size:12.5px}
+    .cfoot{padding-top:10px}
+    .iconbtn{width:44px;height:44px}
+    .cfoot .acts{gap:2px}
+
+    /* modal vira folha inferior (bottom sheet): mais ergonomico no polegar */
+    .overlay{align-items:flex-end;padding:0}
+    .modal{width:100%;max-width:none;border-radius:20px 20px 0 0;padding:20px 18px;
+      max-height:94dvh;animation:sheet .3s var(--ease)}
+    .modal::before{content:"";display:block;width:40px;height:4px;border-radius:99px;
+      background:var(--line2);margin:-6px auto 14px}
+    .modal{padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+    .modal h2{font-size:18px}
+    .modal-x{width:40px;height:40px}
     label{font-size:12px;margin:12px 0 4px}
-    input,select{padding:10px;font-size:16px}
-    .devcode{font-size:22px;letter-spacing:2px;padding:10px}
-    #qrbox svg{width:170px;height:170px}
-    .choice button{padding:14px 10px;min-width:130px;font-size:12px}
-    .overlay{padding:10px}
-    .empty{padding:40px 16px}
+    input,select{padding:12px;font-size:16px;min-height:46px}
+    .svc{padding:14px}
+    .svc-grid{gap:8px}
+    .devcode{font-size:24px;letter-spacing:3px;padding:12px}
+    #qrbox svg{width:180px;height:180px}
+    .choice button{padding:15px 12px;min-width:120px;font-size:13px}
+    .modal .actions button,.modal .actions>.primary{min-height:46px}
+    .empty{padding:44px 18px}
     .empty h2{font-size:16px}
+  }
+  @keyframes sheet{from{opacity:.4;transform:translateY(100%)}to{opacity:1;transform:none}}
+  /* ---- celular pequeno --------------------------------------------------- */
+  @media (max-width:360px){
+    .card h3{font-size:13.5px}
+    .val{font-size:20px}
+    .devcode{font-size:21px;letter-spacing:2px}
+    #qrbox svg{width:160px;height:160px}
   }
 
 </style>
@@ -1654,8 +1677,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="spacer"></div>
   <div class="btns">
     <button class="ghost" onclick="toggleTheme()" id="btnTheme" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
-    <button class="ghost" onclick="load(true)" id="btnRefresh">Atualizar agora</button>
-    <button class="primary" onclick="openAdd()" id="btnAdd">Adicionar conta</button>
+    <button class="ghost" onclick="load(true)" id="btnRefresh" title="Atualizar agora" aria-label="Atualizar agora"><span class="btn-label">Atualizar agora</span></button>
+    <button class="primary" onclick="openAdd()" id="btnAdd" title="Adicionar conta" aria-label="Adicionar conta"><span class="btn-label">Adicionar conta</span></button>
   </div>
 </header>
 
@@ -2256,6 +2279,37 @@ applyTheme(document.documentElement.getAttribute('data-theme'));
 
 // fecha o modal clicando fora
 document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeAdd(); });
+
+// bottom sheet: arrastar para baixo fecha (so no celular, quando ja esta no topo)
+(function(){
+  const modal = document.querySelector('.modal');
+  if(!modal) return;
+  const isSheet = ()=> window.matchMedia('(max-width:600px)').matches;
+  let startY=0, dy=0, dragging=false;
+  modal.addEventListener('touchstart', e=>{
+    if(!isSheet() || modal.scrollTop>0 || e.touches.length!==1){ dragging=false; return; }
+    startY = e.touches[0].clientY; dy=0; dragging=true;
+  }, {passive:true});
+  modal.addEventListener('touchmove', e=>{
+    if(!dragging) return;
+    dy = e.touches[0].clientY - startY;
+    if(dy>0){ modal.style.transition='none'; modal.style.transform='translateY('+dy+'px)'; }
+  }, {passive:true});
+  modal.addEventListener('touchend', ()=>{
+    if(!dragging) return; dragging=false;
+    modal.style.transition='transform .22s var(--ease)';
+    if(dy>120){
+      modal.style.transform='translateY(100%)';
+      setTimeout(()=>{ modal.style.transform=''; modal.style.transition=''; closeAdd(); }, 200);
+    } else {
+      modal.style.transform='';
+      setTimeout(()=>{ modal.style.transition=''; }, 220);
+    }
+  });
+})();
+
+// fecha o modal/folha com a tecla Esc
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('overlay').classList.contains('show')) closeAdd(); });
 
 load();
 </script>
