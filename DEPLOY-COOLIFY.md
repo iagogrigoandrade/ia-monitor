@@ -1,5 +1,8 @@
 # 🚀 Colocar o Monitor de IA no Coolify (passo a passo)
 
+> Guia atualizado e organizado: [`docs/DEPLOY.md`](docs/DEPLOY.md)
+> Este arquivo antigo foi mantido para não quebrar links.
+
 Guia para quem **não é programador**. Objetivo: acessar seu painel de qualquer
 celular/computador, protegido por senha e com HTTPS.
 

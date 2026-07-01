@@ -1,5 +1,10 @@
 # 🧠 Monitor de IA
 
+> Documentação organizada:
+> - Visão geral: [`README.md`](README.md)
+> - Uso local: [`docs/USO-LOCAL.md`](docs/USO-LOCAL.md)
+> - Deploy: [`docs/DEPLOY.md`](docs/DEPLOY.md)
+
 Painel para acompanhar, em um só lugar:
 
 - **Claude** — limite de 5 horas e limite semanal
