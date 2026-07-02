@@ -22,6 +22,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -57,6 +58,7 @@ LISTEN_HOST = os.environ.get("IA_MONITOR_HOST", "127.0.0.1")
 
 # Onde os CLIs guardam o login OAuth (mesmo em qualquer sistema operacional)
 CODEX_AUTH = os.path.join(HOME, ".codex", "auth.json")
+CODEX_INSTALLATION_ID = os.path.join(HOME, ".codex", "installation_id")
 CLAUDE_CRED = os.path.join(HOME, ".claude", ".credentials.json")
 
 # IDs de cliente OAuth dos CLIs oficiais (usados para renovar o token)
@@ -435,15 +437,26 @@ def codex_refresh(account_id, creds):
         return None
 
 
-def _codex_install_id():
+def _codex_home_path(home, filename):
+    return os.path.join(home or HOME, ".codex", filename)
+
+
+def _read_codex_install_id(home=None):
     try:
-        p = os.path.join(HOME, ".codex", "installation_id")
+        p = _codex_home_path(home, "installation_id") if home else CODEX_INSTALLATION_ID
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as f:
                 return f.read().strip()
     except Exception:
         pass
     return ""
+
+
+def _codex_install_id(creds=None):
+    iid = (creds or {}).get("installation_id")
+    if iid:
+        return str(iid).strip()
+    return _read_codex_install_id()
 
 
 def codex_headers(creds):
@@ -457,7 +470,7 @@ def codex_headers(creds):
     if acc:
         h["chatgpt-account-id"] = acc
         h["ChatGPT-Account-Id"] = acc
-    iid = _codex_install_id()
+    iid = _codex_install_id(creds)
     if iid:
         h["x-codex-installation-id"] = iid
     return h
@@ -802,11 +815,12 @@ def fetch_all(force=False):
 # Captura de login dos CLIs (para adicionar contas)
 # --------------------------------------------------------------------------
 
-def capture_codex():
-    if not os.path.exists(CODEX_AUTH):
+def capture_codex(home=None):
+    auth_path = _codex_home_path(home, "auth.json") if home else CODEX_AUTH
+    if not os.path.exists(auth_path):
         return None, "Nao encontrei o login do Codex. Rode 'codex' e faca login primeiro."
     try:
-        with open(CODEX_AUTH, "r", encoding="utf-8") as f:
+        with open(auth_path, "r", encoding="utf-8") as f:
             a = json.load(f)
         tk = a.get("tokens", {})
         creds = {
@@ -819,6 +833,11 @@ def capture_codex():
             return None, "Login do Codex incompleto. Faca login novamente."
         if not creds.get("account_id"):
             creds["account_id"] = _codex_account_id(creds)
+        iid = _read_codex_install_id(home)
+        if home and not iid:
+            iid = str(uuid.uuid4())
+        if iid:
+            creds["installation_id"] = iid
         return creds, None
     except Exception as e:
         return None, f"Erro lendo login do Codex: {e}"
@@ -909,6 +928,7 @@ class LoginJob:
         self.code = ""                  # codigo de device (codex celular)
         self.account_id = None
         self.proc = None
+        self.codex_home = None
         self.started = time.time()
         self.lines = []
         # so para claude (oauth):
@@ -988,53 +1008,77 @@ def _codex_worker(job):
         job.message = "Nao encontrei o programa 'codex'. Instale o CLI do Codex primeiro."
         return
     args = ["login", "--device-auth"] if job.method == "phone" else ["login"]
+    work_home = None
     try:
+        # Isola cada login do Codex. O CLI oficial guarda apenas um auth.json por
+        # HOME; compartilhar ~/.codex entre contas pode invalidar a sessao anterior.
+        work_home = tempfile.mkdtemp(prefix="ia-monitor-codex-")
+        job.codex_home = work_home
+        codex_dir = os.path.join(work_home, ".codex")
+        os.makedirs(codex_dir, exist_ok=True)
+        env = os.environ.copy()
+        env["HOME"] = work_home
+        env["USERPROFILE"] = work_home
+        env["CODEX_HOME"] = codex_dir
+        env["XDG_CONFIG_HOME"] = os.path.join(work_home, ".config")
+        drive, tail = os.path.splitdrive(work_home)
+        if drive:
+            env["HOMEDRIVE"] = drive
+            env["HOMEPATH"] = tail or os.sep
         job.proc = subprocess.Popen(
             [exe] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1,
+            stderr=subprocess.STDOUT, text=True, bufsize=1, env=env,
         )
     except Exception as e:
         job.status = "error"
         job.message = f"Falha ao iniciar login: {e}"
+        if work_home:
+            shutil.rmtree(work_home, ignore_errors=True)
+            job.codex_home = None
         return
 
-    for raw in job.proc.stdout:
-        line = _strip(raw.rstrip())
-        job.lines.append(line)
-        if not job.url:
-            u = _find_url(line)
-            if u:
-                job.url = u
-                if job.status == "starting":
-                    job.status = "awaiting"
-        if job.method == "phone" and not job.code:
-            c = _find_device_code(line)
-            if c:
-                job.code = c
+    try:
+        for raw in job.proc.stdout:
+            line = _strip(raw.rstrip())
+            job.lines.append(line)
+            if not job.url:
+                u = _find_url(line)
+                if u:
+                    job.url = u
+                    if job.status == "starting":
+                        job.status = "awaiting"
+            if job.method == "phone" and not job.code:
+                c = _find_device_code(line)
+                if c:
+                    job.code = c
 
-    rc = job.proc.wait()
-    if job.status == "error":
-        return
-    if rc == 0:
-        creds, err = capture_codex()
-        if err:
-            job.status = "error"
-            job.message = err
+        rc = job.proc.wait()
+        if job.status == "error":
             return
-        job.account_id = _apply_login("codex", job.label, creds, job.target_id)
-        job.status = "done"
-        job.message = "Login concluido!"
-    else:
-        tail = " ".join(job.lines[-4:]) if job.lines else ""
-        job.status = "error"
-        low = tail.lower()
-        if "429" in low or "too many requests" in low:
-            # OpenAI limitou o endpoint de device code: segura novas tentativas por um tempo.
-            _codex_device_cooldown_until = time.time() + 120
-            job.message = ("O OpenAI limitou os pedidos de login do Codex (429). "
-                           "Aguarde 1-2 minutos e tente de novo.")
+        if rc == 0:
+            creds, err = capture_codex(work_home)
+            if err:
+                job.status = "error"
+                job.message = err
+                return
+            job.account_id = _apply_login("codex", job.label, creds, job.target_id)
+            job.status = "done"
+            job.message = "Login concluido!"
         else:
-            job.message = f"Login nao concluido (codigo {rc}). {tail}".strip()
+            tail = " ".join(job.lines[-4:]) if job.lines else ""
+            job.status = "error"
+            low = tail.lower()
+            if "429" in low or "too many requests" in low:
+                # OpenAI limitou o endpoint de device code: segura novas tentativas por um tempo.
+                _codex_device_cooldown_until = time.time() + 120
+                job.message = ("O OpenAI limitou os pedidos de login do Codex (429). "
+                               "Aguarde 1-2 minutos e tente de novo.")
+            else:
+                job.message = f"Login nao concluido (codigo {rc}). {tail}".strip()
+    finally:
+        if work_home:
+            shutil.rmtree(work_home, ignore_errors=True)
+            job.codex_home = None
 
 
 # ---- Claude: OAuth feito pelo proprio painel -----------------------------
