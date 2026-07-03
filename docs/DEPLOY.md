@@ -12,6 +12,7 @@ Checklist obrigatório:
 - HTTPS ativo no domínio.
 - Senha configurada com `IA_MONITOR_PASSWORD`.
 - Volume persistente montado em `/data`.
+- Rate limit ativo, que já vem ligado por padrão.
 
 Nunca envie estes arquivos para o GitHub:
 
@@ -52,6 +53,29 @@ O `Dockerfile` já define:
 | `IA_MONITOR_PORT` | `8765` |
 
 Você normalmente não precisa alterar essas três.
+
+O rate limit já vem ligado. Para a maioria dos deploys, não precisa configurar nada.
+Se quiser deixar mais rígido ou mais folgado, adicione estas variáveis:
+
+| Variável | Padrão | O que limita |
+|---|---:|---|
+| `IA_MONITOR_RATE_GLOBAL` | `240` | requisições gerais por minuto por IP |
+| `IA_MONITOR_RATE_API` | `120` | requisições `/api` por minuto por IP |
+| `IA_MONITOR_RATE_STATUS` | `60` | consultas de status por minuto por IP |
+| `IA_MONITOR_RATE_WRITE` | `40` | ações `POST` por minuto por IP |
+| `IA_MONITOR_RATE_LOGIN_START` | `10` | inícios de login por minuto por IP |
+| `IA_MONITOR_RATE_AUTH_FAIL` | `8` | senhas erradas antes de bloquear temporariamente |
+| `IA_MONITOR_RATE_AUTH_FAIL_WINDOW` | `300` | janela, em segundos, para senhas erradas |
+
+Outras opções:
+
+| Variável | Padrão | Uso |
+|---|---:|---|
+| `IA_MONITOR_RATE_LIMIT` | `1` | coloque `0` para desligar o rate limit |
+| `IA_MONITOR_MAX_BODY_BYTES` | `65536` | tamanho máximo de JSON nos `POST` |
+| `IA_MONITOR_TRUST_PROXY` | `0` | use `1` só se seu proxy reescreve `X-Forwarded-For` com segurança |
+
+Se o painel estiver atrás do Coolify/Traefik e você mantiver `IA_MONITOR_TRUST_PROXY=0`, o limite vale para o IP do proxy. Isso protege o servidor, mas vários usuários podem compartilhar o mesmo limite. Use `1` apenas quando tiver certeza de que o proxy não deixa o cliente falsificar `X-Forwarded-For`.
 
 ### 3. Volume Persistente
 
@@ -131,6 +155,7 @@ Em servidor, prefira `No celular (QR)`:
 - Não compartilhe o link e a senha do painel.
 - Não envie `config.json` para o GitHub.
 - Faça backup do volume `/data` se o servidor for importante.
+- O rate limit do app reduz abuso com senha descoberta, mas não substitui Cloudflare, firewall ou rate limit no proxy contra ataques distribuídos.
 
 Mesmo com acesso ao painel, as API keys e tokens não são mostrados pela interface. Eles ficam no servidor, no arquivo `config.json`.
 

@@ -40,6 +40,7 @@ O projeto roda localmente com Python 3 e também pode ser publicado via Docker/C
 - Backups automáticos ficam em `backups/`.
 - `config.json`, `backups/`, `__pycache__/` e `.claude/` não entram no Git.
 - No deploy público, use sempre HTTPS e defina `IA_MONITOR_PASSWORD`.
+- O servidor tem rate limit por IP ligado por padrão para reduzir abuso nas rotas do painel.
 
 ## Desenvolvimento
 

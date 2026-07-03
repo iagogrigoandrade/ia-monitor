@@ -12,6 +12,7 @@ Nao precisa instalar nada. Basta executar.
 """
 
 import base64
+from collections import deque
 import hashlib
 import hmac
 import json
@@ -37,6 +38,19 @@ from urllib.parse import urlparse, parse_qs, urlencode
 # Caminhos e configuracao
 # --------------------------------------------------------------------------
 
+def env_bool(name, default=False):
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on", "sim")
+
+
+def env_int(name, default, minimum=1):
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except Exception:
+        return default
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(BASE_DIR, "assets")
 # Permite apontar para outro arquivo de config (usado em testes p/ nao mexer no real)
@@ -55,6 +69,21 @@ AUTH_USER = os.environ.get("IA_MONITOR_USER", "admin")
 AUTH_PASSWORD = os.environ.get("IA_MONITOR_PASSWORD", "")
 # Endereco de escuta. Local: 127.0.0.1 (so a sua maquina). Servidor: 0.0.0.0.
 LISTEN_HOST = os.environ.get("IA_MONITOR_HOST", "127.0.0.1")
+
+# Rate limit em memoria, por IP. Mantem o painel responsivo mesmo se alguem
+# descobrir a senha e tentar martelar as APIs. Ajuste por variaveis de ambiente.
+RATE_LIMIT_ENABLED = env_bool("IA_MONITOR_RATE_LIMIT", True)
+RATE_LIMIT_TRUST_PROXY = env_bool("IA_MONITOR_TRUST_PROXY", False)
+RATE_WINDOW = env_int("IA_MONITOR_RATE_WINDOW", 60)
+RATE_GLOBAL = env_int("IA_MONITOR_RATE_GLOBAL", 240)
+RATE_API = env_int("IA_MONITOR_RATE_API", 120)
+RATE_STATUS = env_int("IA_MONITOR_RATE_STATUS", 60)
+RATE_WRITE = env_int("IA_MONITOR_RATE_WRITE", 40)
+RATE_LOGIN_START = env_int("IA_MONITOR_RATE_LOGIN_START", 10)
+RATE_LOGIN_CODE = env_int("IA_MONITOR_RATE_LOGIN_CODE", 20)
+RATE_AUTH_FAIL = env_int("IA_MONITOR_RATE_AUTH_FAIL", 8)
+RATE_AUTH_FAIL_WINDOW = env_int("IA_MONITOR_RATE_AUTH_FAIL_WINDOW", 300)
+MAX_JSON_BODY = env_int("IA_MONITOR_MAX_BODY_BYTES", 65536)
 
 # Onde os CLIs guardam o login OAuth (mesmo em qualquer sistema operacional)
 CODEX_AUTH = os.path.join(HOME, ".codex", "auth.json")
@@ -169,6 +198,50 @@ def account_refresh_lock(account_id):
             lk = threading.Lock()
             _refresh_locks[account_id] = lk
         return lk
+
+
+_rate_lock = threading.Lock()
+_rate_buckets = {}  # "escopo:ip" -> deque[timestamps]
+_rate_hits = 0
+
+
+def rate_limit_hit(scope, client_ip, limit, window=RATE_WINDOW):
+    """Registra uma requisicao e retorna (bloqueado, retry_after_segundos)."""
+    if not RATE_LIMIT_ENABLED:
+        return False, 0
+
+    now = time.monotonic()
+    cutoff = now - window
+    key = f"{scope}:{client_ip or 'unknown'}"
+
+    with _rate_lock:
+        global _rate_hits
+        _rate_hits += 1
+
+        bucket = _rate_buckets.get(key)
+        if bucket is None:
+            bucket = deque()
+            _rate_buckets[key] = bucket
+
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+
+        if len(bucket) >= limit:
+            retry = int(window - (now - bucket[0])) + 1
+            return True, max(1, retry)
+
+        bucket.append(now)
+
+        # Limpeza ocasional para nao acumular IPs antigos indefinidamente.
+        if _rate_hits % 500 == 0:
+            stale_cutoff = now - max(RATE_WINDOW, RATE_AUTH_FAIL_WINDOW)
+            for old_key, old_bucket in list(_rate_buckets.items()):
+                while old_bucket and old_bucket[0] <= stale_cutoff:
+                    old_bucket.popleft()
+                if not old_bucket:
+                    _rate_buckets.pop(old_key, None)
+
+    return False, 0
 
 
 # --------------------------------------------------------------------------
@@ -1205,7 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # silencioso
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False)
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -1213,8 +1286,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         self.wfile.write(data)
+
+    def _client_ip(self):
+        if RATE_LIMIT_TRUST_PROXY:
+            xff = self.headers.get("X-Forwarded-For", "")
+            if xff:
+                return xff.split(",", 1)[0].strip()
+            real = self.headers.get("X-Real-IP", "")
+            if real:
+                return real.strip()
+        return self.client_address[0] if self.client_address else "unknown"
+
+    def _send_rate_limited(self, retry_after):
+        self._send(
+            429,
+            {"error": f"Muitas requisicoes. Tente de novo em {retry_after}s."},
+            headers={"Retry-After": retry_after},
+        )
+
+    def _rate_limit(self, scope, limit, window=RATE_WINDOW):
+        blocked, retry_after = rate_limit_hit(scope, self._client_ip(), limit, window)
+        if blocked:
+            self._send_rate_limited(retry_after)
+            return False
+        return True
 
     def _read_json(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -1243,6 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
         Sem senha configurada (modo local), libera tudo."""
         if not AUTH_PASSWORD:
             return True
+        ip = self._client_ip()
         hdr = self.headers.get("Authorization", "")
         if hdr.startswith("Basic "):
             try:
@@ -1254,6 +1354,10 @@ class Handler(BaseHTTPRequestHandler):
                     return True
             except Exception:
                 pass
+        blocked, retry_after = rate_limit_hit("auth-fail", ip, RATE_AUTH_FAIL, RATE_AUTH_FAIL_WINDOW)
+        if blocked:
+            self._send_rate_limited(retry_after)
+            return False
         self.send_response(401)
         self.send_header("WWW-Authenticate", 'Basic realm="Monitor de IA"')
         self.send_header("Content-Length", "0")
@@ -1266,12 +1370,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             self._send(200, {"ok": True})
             return
+        if not self._rate_limit("global", RATE_GLOBAL):
+            return
         if not self._check_auth():
+            return
+        if path.startswith("/api/") and not self._rate_limit("api", RATE_API):
             return
         query = parse_qs(urlparse(self.path).query)
         if path == "/" or path.startswith("/index"):
             self._send(200, HTML_PAGE, "text/html; charset=utf-8")
         elif path == "/api/status":
+            if not self._rate_limit("api-status", RATE_STATUS):
+                return
             force = (query.get("force") or ["0"])[0] == "1"
             if force:
                 # protecao contra clique-duplo: no maximo 1 "forcar" a cada 4s
@@ -1310,18 +1420,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        path = urlparse(self.path).path
+        if not self._rate_limit("global", RATE_GLOBAL):
+            return
         if not self._check_auth():
             return
+        if path.startswith("/api/") and not self._rate_limit("api", RATE_API):
+            return
+        if path.startswith("/api/") and not self._rate_limit("api-write", RATE_WRITE):
+            return
+        if path == "/api/login/start" and not self._rate_limit("login-start", RATE_LOGIN_START):
+            return
+        if path == "/api/login/code" and not self._rate_limit("login-code", RATE_LOGIN_CODE):
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except Exception:
+            length = 0
+        if length > MAX_JSON_BODY:
+            self._send(413, {"error": "Requisicao grande demais."})
+            return
         body = self._read_json()
-        if self.path == "/api/accounts/add":
+        if path == "/api/accounts/add":
             self._handle_add(body)
-        elif self.path == "/api/accounts/delete":
+        elif path == "/api/accounts/delete":
             self._handle_delete(body)
-        elif self.path == "/api/accounts/rename":
+        elif path == "/api/accounts/rename":
             self._handle_rename(body)
-        elif self.path == "/api/accounts/reorder":
+        elif path == "/api/accounts/reorder":
             self._handle_reorder(body)
-        elif self.path == "/api/settings":
+        elif path == "/api/settings":
             with _config_lock:
                 cfg = load_config()
                 if "refresh_seconds" in body:
@@ -1331,7 +1459,7 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 save_config(cfg)
             self._send(200, {"ok": True})
-        elif self.path == "/api/login/start":
+        elif path == "/api/login/start":
             if body.get("type") == "codex" and (body.get("method") or "browser") == "browser" and \
                     not is_loopback_host(self.headers.get("Host", "")):
                 self._send(400, {"error": "No deploy, o login 'Neste PC' do Codex nao funciona porque o retorno usa localhost:1455. Use 'No celular (QR)'."})
@@ -1344,10 +1472,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(200, {"ok": True, "id": job.id, "mode": job.mode,
                                  "method": job.method})
-        elif self.path == "/api/login/code":
+        elif path == "/api/login/code":
             err = login_submit_code(body.get("id"), body.get("code"))
             self._send(200 if not err else 400, {"ok": not err, "error": err})
-        elif self.path == "/api/login/cancel":
+        elif path == "/api/login/cancel":
             login_cancel(body.get("id"))
             self._send(200, {"ok": True})
         else:

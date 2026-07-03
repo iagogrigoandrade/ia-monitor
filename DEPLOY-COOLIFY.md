@@ -9,6 +9,8 @@ celular/computador, protegido por senha e com HTTPS.
 > ⚠️ **Segurança:** este painel guarda suas chaves e logins. NUNCA deixe sem senha
 > na internet. Os passos abaixo já configuram uma senha (variável `IA_MONITOR_PASSWORD`).
 > Suas chaves **nunca** aparecem no navegador — o painel só mostra as barras de uso.
+> O app também já vem com rate limit por IP para reduzir abuso se alguém tentar
+> martelar o painel.
 
 ---
 
@@ -60,6 +62,7 @@ Salve. **Guarde essa senha** — é ela que você vai digitar ao abrir o painel.
 
 > As variáveis `IA_MONITOR_HOST`, `IA_MONITOR_PORT` e `IA_MONITOR_CONFIG` já vêm
 > definidas no `Dockerfile` — não precisa mexer.
+> O rate limit já vem ligado. Ajustes avançados ficam em [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ---
 
