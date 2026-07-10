@@ -29,6 +29,7 @@ O projeto roda localmente com Python 3 e também pode ser publicado via Docker/C
 |-- Iniciar-Windows.bat     # atalho local para Windows
 |-- iniciar-linux.sh        # atalho local para Linux
 |-- iniciar-mac.command     # atalho local para macOS
+|-- watch-app/              # mini app Zepp OS p/ Amazfit Active 2 (ver watch-app/README.md)
 `-- docs/
     |-- USO-LOCAL.md        # instruções para rodar no computador
     `-- DEPLOY.md           # instruções para publicar em servidor/Coolify

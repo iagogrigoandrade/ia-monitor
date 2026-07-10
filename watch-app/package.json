@@ -1,0 +1,15 @@
+{
+  "name": "monitor-ia-watch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Limites de IA no Amazfit Active 2 (Zepp OS)",
+  "dependencies": {
+    "@zeppos/zml": "^0.0.43"
+  },
+  "devDependencies": {
+    "@zeppos/zeus-cli": "^1.9.2"
+  },
+  "_moduleAliases": {
+    "zeppos-app-utils": "node_modules/@zeppos/zeus-cli/private-modules/zeppos-app-utils"
+  }
+}

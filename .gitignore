@@ -3,3 +3,6 @@ __pycache__/
 backups/
 config.json
 .claude/
+watch-app/node_modules/
+watch-app/dist/
+watch-app/.zeus/
