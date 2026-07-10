@@ -5,14 +5,17 @@
     "appName": "Monitor IA",
     "appType": "app",
     "version": {
-      "code": 5,
-      "name": "1.1.3"
+      "code": 7,
+      "name": "1.3.0"
     },
     "icon": "icon.png",
     "vender": "iago",
     "description": "Limites e creditos de IA (Claude, Codex, DeepSeek, OpenRouter) no pulso"
   },
-  "permissions": [],
+  "permissions": [
+    "device:os.notification",
+    "device:os.alarm"
+  ],
   "runtime": {
     "apiVersion": {
       "compatible": "3.0.0",
@@ -33,6 +36,11 @@
         },
         "setting": {
           "path": "setting/index"
+        },
+        "app-service": {
+          "services": [
+            "app-service/index"
+          ]
         },
         "secondary-widget": {
           "widgets": [

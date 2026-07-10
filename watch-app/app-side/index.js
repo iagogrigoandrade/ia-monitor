@@ -57,6 +57,18 @@ function shrink(data) {
         if (m.value !== undefined) mm.value = m.value
         if (m.unit) mm.unit = m.unit
         if (m.reset) mm.reset = String(m.reset).slice(0, 40)
+        // Horario exato da renovacao (epoch, segundos) p/ o alarme pontual.
+        // Claude manda texto ISO; Codex pode mandar numero (epoch).
+        if (m.resetAt) {
+          let ts = null
+          if (typeof m.resetAt === 'number') {
+            ts = m.resetAt > 1e12 ? Math.floor(m.resetAt / 1000) : Math.floor(m.resetAt)
+          } else {
+            const t = Date.parse(m.resetAt)
+            if (!isNaN(t)) ts = Math.floor(t / 1000)
+          }
+          if (ts) mm.resetTs = ts
+        }
         return mm
       })
     }

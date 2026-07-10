@@ -3,6 +3,7 @@ import { createWidget, deleteWidget, widget, align, text_style, prop } from '@zo
 import { setScrollMode, SCROLL_MODE_FREE } from '@zos/page'
 import { setInterval, clearInterval } from '@zos/timer'
 import { writeFileSync } from '@zos/fs'
+import { set as setAlarm, getAllAlarms, REPEAT_MINUTE } from '@zos/alarm'
 
 // Tela do Active 2 Round: 466x466 (designWidth = 466, sem conversao px)
 const W = 466
@@ -60,6 +61,23 @@ Page(
 
       this.load(false)
       this.state.timer = setInterval(() => this.load(false), 60000)
+      this.ensureAlarm()
+    },
+
+    // Agenda o vigia em segundo plano (a cada 15 min) uma unica vez.
+    // O alarme sobrevive a reinicio do relogio (store: true).
+    ensureAlarm() {
+      try {
+        const existing = getAllAlarms()
+        if (existing && existing.length) return
+        setAlarm({
+          url: 'app-service/index',
+          delay: 900,
+          repeat_type: REPEAT_MINUTE,
+          repeat_period: 15,
+          store: true,
+        })
+      } catch (e) {}
     },
 
     onDestroy() {
