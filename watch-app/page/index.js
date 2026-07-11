@@ -31,14 +31,14 @@ const THEMES = {
     pctLow: 0x35d07f,
   },
   light: {
-    bg: 0xf2f5f3,
-    card: 0xffffff,
+    bg: 0xd4d8d6, // cinza de fundo (mesmo do widget)
+    card: 0xffffff, // cartoes brancos
     text: 0x111a15,
-    muted: 0x5b6e63,
+    muted: 0x50605a,
     accent: 0x0f8a52,
     barBg: 0xdde5df,
-    btn: 0xcdeeda,
-    btnPress: 0xaee2c4,
+    btn: 0xbfe8d0,
+    btnPress: 0x9fdcb8,
     err: 0xd93636,
     warn: 0xb87400,
     pctHigh: 0xd93636,

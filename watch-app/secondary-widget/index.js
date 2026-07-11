@@ -24,12 +24,12 @@ const THEMES = {
     pctLow: 0x35d07f,
   },
   light: {
-    bg: 0xf2f5f3,
-    press: 0xdde5df,
+    bg: 0xd4d8d6, // cinza, um pouco menos claro (mesmo fundo do app)
+    press: 0xbcc2bf,
     text: 0x111a15,
-    muted: 0x5b6e63,
+    muted: 0x50605a,
     accent: 0x0f8a52,
-    barBg: 0xdde5df,
+    barBg: 0xbcc2bf,
     err: 0xd93636,
     pctHigh: 0xd93636,
     pctMid: 0xb87400,
