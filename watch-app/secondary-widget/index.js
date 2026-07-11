@@ -9,16 +9,46 @@ const W = 466
 const MX = 64
 const CW = W - MX * 2
 
-const C_TITLE = 0x35d07f
-const C_TEXT = 0xffffff
-const C_MUTED = 0x8fa3b0
-const C_ERR = 0xff5a5a
-const C_BAR_BG = 0x1e2732
+// Mesmos temas do app; o modo escolhido fica salvo em theme.json
+const THEMES = {
+  dark: {
+    bg: 0x000000,
+    press: 0x1e2732,
+    text: 0xffffff,
+    muted: 0x8fa3b0,
+    accent: 0x35d07f,
+    barBg: 0x1e2732,
+    err: 0xff5a5a,
+    pctHigh: 0xff5a5a,
+    pctMid: 0xffb340,
+    pctLow: 0x35d07f,
+  },
+  light: {
+    bg: 0xf2f5f3,
+    press: 0xdde5df,
+    text: 0x111a15,
+    muted: 0x5b6e63,
+    accent: 0x0f8a52,
+    barBg: 0xdde5df,
+    err: 0xd93636,
+    pctHigh: 0xd93636,
+    pctMid: 0xb87400,
+    pctLow: 0x0f8a52,
+  },
+}
 
-function pctColor(p) {
-  if (p >= 85) return 0xff5a5a
-  if (p >= 60) return 0xffb340
-  return 0x35d07f
+function loadTheme() {
+  try {
+    const raw = readFileSync({ path: 'theme.json', options: { encoding: 'utf8' } })
+    if (raw && !JSON.parse(raw).dark) return THEMES.light
+  } catch (e) {}
+  return THEMES.dark
+}
+
+function pctColor(T, p) {
+  if (p >= 85) return T.pctHigh
+  if (p >= 60) return T.pctMid
+  return T.pctLow
 }
 
 function openApp() {
@@ -75,7 +105,7 @@ SecondaryWidget({
   },
 
   // Rodape clicavel: unica area que abre o app
-  addFooter(label) {
+  addFooter(T, label) {
     this.add(widget.BUTTON, {
       x: MX - 20,
       y: 366,
@@ -84,9 +114,9 @@ SecondaryWidget({
       radius: 12,
       text: label,
       text_size: 18,
-      color: C_MUTED,
-      normal_color: 0x000000,
-      press_color: 0x1e2732,
+      color: T.muted,
+      normal_color: T.bg,
+      press_color: T.press,
       click_func: openApp,
     })
   },
@@ -95,13 +125,15 @@ SecondaryWidget({
     this.state.widgets.forEach((w) => deleteWidget(w))
     this.state.widgets = []
 
-    // Fundo preto (sem clique)
+    const T = loadTheme()
+
+    // Fundo (sem clique)
     this.add(widget.FILL_RECT, {
       x: 0,
       y: 0,
       w: W,
       h: W,
-      color: 0x000000,
+      color: T.bg,
     })
 
     this.add(widget.TEXT, {
@@ -109,7 +141,7 @@ SecondaryWidget({
       y: 40,
       w: W,
       h: 38,
-      color: C_TITLE,
+      color: T.accent,
       text_size: 28,
       align_h: align.CENTER_H,
       text: 'Monitor IA',
@@ -130,13 +162,13 @@ SecondaryWidget({
         y: 150,
         w: CW,
         h: 160,
-        color: C_MUTED,
+        color: T.muted,
         text_size: 24,
         align_h: align.CENTER_H,
         text_style: text_style.WRAP,
         text: 'Sem dados ainda. Abra o app para carregar.',
       })
-      this.addFooter('toque p/ abrir')
+      this.addFooter(T, 'toque p/ abrir')
       return
     }
 
@@ -149,7 +181,7 @@ SecondaryWidget({
         y,
         w: CW - 110,
         h: 30,
-        color: C_TEXT,
+        color: T.text,
         text_size: 24,
         align_h: align.LEFT,
         text_style: text_style.ELLIPSIS,
@@ -162,7 +194,7 @@ SecondaryWidget({
           y,
           w: 110,
           h: 30,
-          color: C_ERR,
+          color: T.err,
           text_size: 24,
           align_h: align.RIGHT,
           text: 'erro',
@@ -178,7 +210,7 @@ SecondaryWidget({
           y,
           w: 110,
           h: 30,
-          color: C_MUTED,
+          color: T.muted,
           text_size: 24,
           align_h: align.RIGHT,
           text: '-',
@@ -193,7 +225,7 @@ SecondaryWidget({
         y,
         w: 110,
         h: 30,
-        color: pctColor(pct),
+        color: pctColor(T, pct),
         text_size: 24,
         align_h: align.RIGHT,
         text: Math.round(m.percent || 0) + '%',
@@ -207,7 +239,7 @@ SecondaryWidget({
         w: CW,
         h: 8,
         radius: 4,
-        color: C_BAR_BG,
+        color: T.barBg,
       })
       this.add(widget.FILL_RECT, {
         x: MX,
@@ -215,7 +247,7 @@ SecondaryWidget({
         w: Math.max(8, Math.round((pct / 100) * CW)),
         h: 8,
         radius: 4,
-        color: pctColor(pct),
+        color: pctColor(T, pct),
       })
       y += 12
 
@@ -227,7 +259,7 @@ SecondaryWidget({
           y,
           w: CW,
           h: 24,
-          color: C_MUTED,
+          color: T.muted,
           text_size: 18,
           align_h: align.LEFT,
           text_style: text_style.ELLIPSIS,
@@ -244,13 +276,13 @@ SecondaryWidget({
         y,
         w: CW,
         h: 24,
-        color: C_MUTED,
+        color: T.muted,
         text_size: 18,
         align_h: align.CENTER_H,
         text: '+' + (data.accounts.length - 3) + ' no app',
       })
     }
 
-    this.addFooter('Atualizado ' + (data.updated_at || '--') + ' · toque p/ abrir')
+    this.addFooter(T, 'Atualizado ' + (data.updated_at || '--') + ' · toque p/ abrir')
   },
 })
