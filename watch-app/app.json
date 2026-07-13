@@ -5,8 +5,8 @@
     "appName": "Monitor IA",
     "appType": "app",
     "version": {
-      "code": 10,
-      "name": "1.5.1"
+      "code": 11,
+      "name": "1.5.2"
     },
     "icon": "icon.png",
     "vender": "iago",

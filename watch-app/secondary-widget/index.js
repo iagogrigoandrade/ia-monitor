@@ -3,7 +3,8 @@ import { createWidget, deleteWidget, widget, align, text_style } from '@zos/ui'
 import { push } from '@zos/router'
 
 // Widget (cartao ao deslizar na tela). Sem rolagem e sem Bluetooth aqui:
-// mostra so o limite de 5h de cada conta e quanto falta para zerar.
+// mostra o limite principal de cada conta (5h; senao o primeiro com %,
+// ex: semanal do Codex) e quanto falta para zerar.
 // Apenas o rodape ("toque p/ abrir") abre o app completo.
 const W = 466
 const MX = 64
@@ -57,12 +58,17 @@ function openApp() {
   } catch (e) {}
 }
 
-// Acha a metrica do limite de 5h da conta (label contendo "5h")
-function find5h(acc) {
+// Acha a metrica principal da conta: prefere o limite de 5h;
+// se nao houver (ex: Codex hoje so manda o semanal), usa a
+// primeira metrica que tenha porcentagem.
+function findMain(acc) {
   const ms = acc.metrics || []
   for (let i = 0; i < ms.length; i++) {
     const l = String(ms[i].label || '').toLowerCase()
     if (l.indexOf('5h') >= 0 || l.indexOf('5 h') >= 0) return ms[i]
+  }
+  for (let i = 0; i < ms.length; i++) {
+    if (typeof ms[i].percent === 'number') return ms[i]
   }
   return null
 }
@@ -75,6 +81,10 @@ function resetText(m) {
     if (s > 0) {
       const h = Math.floor(s / 3600)
       const min = Math.floor((s % 3600) / 60)
+      if (h >= 24) {
+        const d = Math.floor(h / 24)
+        return 'Zera em ' + d + 'd ' + (h % 24) + 'h'
+      }
       return h > 0 ? 'Zera em ' + h + 'h ' + min + 'min' : 'Zera em ' + min + 'min'
     }
     return 'Renovando...'
@@ -203,7 +213,7 @@ SecondaryWidget({
         return
       }
 
-      const m = find5h(acc)
+      const m = findMain(acc)
       if (!m) {
         this.add(widget.TEXT, {
           x: MX + CW - 110,
