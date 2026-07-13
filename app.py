@@ -1641,6 +1641,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
   button.primary:hover{filter:brightness(1.08)}
   button.ghost{background:transparent}
+  button.ghost.active{color:var(--accent);border-color:var(--accent);background:rgba(34,197,94,.1)}
   button.danger{border-color:#4b2226;color:#fca5a5;background:transparent}
   button.danger:hover{border-color:var(--bad);background:rgba(239,68,68,.08)}
 
@@ -1849,6 +1850,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <div class="spacer"></div>
   <div class="btns">
     <button class="ghost" onclick="toggleTheme()" id="btnTheme" title="Alternar tema claro/escuro" aria-label="Alternar tema"></button>
+    <button class="ghost" onclick="toggleFloatingLimits()" id="btnFloating" title="Abrir limites flutuantes (sempre visíveis)" aria-label="Abrir limites flutuantes" aria-pressed="false"><span class="btn-label">Flutuante</span></button>
     <button class="ghost" onclick="load(true)" id="btnRefresh" title="Atualizar agora" aria-label="Atualizar agora"><span class="btn-label">Atualizar agora</span></button>
     <button class="primary" onclick="openAdd()" id="btnAdd" title="Adicionar conta" aria-label="Adicionar conta"><span class="btn-label">Adicionar conta</span></button>
   </div>
@@ -1954,6 +1956,7 @@ const ICON = {
   wallet:'<path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M16 12h4"/>',
   cpu:'<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
   link:'<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  popout:'<path d="M15 3h6v6"/><path d="m21 3-8 8"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon:'<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
 };
@@ -1965,6 +1968,7 @@ function applyTheme(t){
   try{ localStorage.setItem('ia-theme', t); }catch(e){}
   const btn = document.getElementById('btnTheme');
   if(btn) btn.innerHTML = svg(t === 'light' ? 'moon' : 'sun');
+  renderFloatingLimits();
 }
 function toggleTheme(){
   const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
@@ -2108,6 +2112,249 @@ function renderCards(){
   setupDrag();
 }
 
+let floatingLimitsWindow = null;
+let floatingLimitsVideo = null;
+let floatingLimitsCanvas = null;
+function supportsFloatingLimits(){
+  return !!(window.documentPictureInPicture && typeof window.documentPictureInPicture.requestWindow === 'function');
+}
+function isFloatingLimitsOpen(){
+  return !!((floatingLimitsWindow && !floatingLimitsWindow.closed) ||
+    (floatingLimitsVideo && document.pictureInPictureElement === floatingLimitsVideo));
+}
+function updateFloatingLimitsButton(){
+  const btn = document.getElementById('btnFloating');
+  if(!btn) return;
+  const open = isFloatingLimitsOpen();
+  btn.classList.toggle('active', open);
+  btn.setAttribute('aria-pressed', open ? 'true' : 'false');
+  btn.setAttribute('aria-label', open ? 'Fechar limites flutuantes' : 'Abrir limites flutuantes');
+  btn.title = open ? 'Fechar limites flutuantes' : 'Abrir limites flutuantes (sempre visíveis)';
+}
+function floatingMetricHTML(metric){
+  if(metric.percent !== undefined && metric.percent !== null){
+    const percent = Math.max(0, Math.min(100, metric.percent));
+    const reset = resetText(metric);
+    return `<div class="floating-metric">
+      <div><span>${esc(metricLabel(metric.label))}</span><strong>${esc(metric.percent)}%</strong></div>
+      ${reset ? `<small>${esc(reset)}</small>` : ''}
+      <i><b style="width:${percent}%;background:${color(percent)}"></b></i>
+    </div>`;
+  }
+  if(metric.value !== undefined && metric.value !== null){
+    return `<div class="floating-metric floating-value">
+      <span>${esc(metric.label)}</span><strong>${esc(fmtNum(metric.value))} <small>${esc(metric.unit || '')}</small></strong>
+    </div>`;
+  }
+  return '';
+}
+function floatingAccountHTML(account){
+  const content = account.error
+    ? `<p class="floating-error">${esc(account.error)}</p>`
+    : (account.metrics || []).map(floatingMetricHTML).join('') || '<p class="floating-error">Sem dados.</p>';
+  return `<article class="floating-card">
+    <header><h2>${esc(account.label || account.typeLabel)}</h2><span>${esc(account.typeLabel || '')}</span></header>
+    ${account.detail ? `<p class="floating-detail">${esc(account.detail)}</p>` : ''}
+    ${content}
+  </article>`;
+}
+function renderFloatingLimits(){
+  renderVideoFloatingLimits();
+  if(!floatingLimitsWindow || floatingLimitsWindow.closed) return;
+  const doc = floatingLimitsWindow.document;
+  const theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  doc.documentElement.setAttribute('data-theme', theme);
+  doc.title = 'Limites de IA';
+  doc.body.innerHTML = `<main>
+    <div class="floating-top"><div><h1>Limites de IA</h1><p>Atualizado automaticamente</p></div><div class="floating-actions"><button type="button" data-action="refresh" title="Atualizar agora">Atualizar</button><button type="button" data-action="close" title="Fechar janela flutuante" aria-label="Fechar">×</button></div></div>
+    <section>${LAST.length ? LAST.map(floatingAccountHTML).join('') : '<p class="floating-empty">Carregando limites...</p>'}</section>
+  </main>`;
+  doc.querySelector('[data-action="refresh"]').addEventListener('click', () => load(true));
+  doc.querySelector('[data-action="close"]').addEventListener('click', () => floatingLimitsWindow.close());
+}
+function supportsVideoFloatingLimits(){
+  return !!(HTMLCanvasElement.prototype.captureStream && HTMLVideoElement.prototype.requestPictureInPicture);
+}
+function canvasRoundRect(ctx, x, y, width, height, radius){
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+function canvasText(ctx, text, maxWidth){
+  let result = String(text || '');
+  while(result && ctx.measureText(result).width > maxWidth){ result = result.slice(0, -1); }
+  return result === String(text || '') ? result : `${result.slice(0, -1)}...`;
+}
+function renderVideoFloatingLimits(){
+  const canvas = floatingLimitsCanvas;
+  if(!canvas) return;
+  const accounts = LAST.slice(0, 6);
+  const rows = accounts.map(account => account.error ? 1 : Math.max(1, (account.metrics || []).length));
+  const height = Math.max(280, Math.min(900, 92 + accounts.reduce((total, account, index) =>
+    total + 52 + rows[index] * 30 + (account.detail ? 16 : 0), 0) + (LAST.length > accounts.length ? 30 : 0)));
+  const width = 560;
+  canvas.width = width;
+  canvas.height = height;
+
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  const colors = light
+    ? {bg:'#eef2f8', surface:'#ffffff', line:'#cbd5e1', text:'#0f172a', muted:'#475569', faint:'#64748b', ok:'#16a34a', warn:'#b87400', bad:'#d93636'}
+    : {bg:'#151d30', surface:'#222e49', line:'#384663', text:'#f8fafc', muted:'#a6b3c9', faint:'#7c8aa5', ok:'#22c55e', warn:'#f5a623', bad:'#ef4444'};
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = colors.bg;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = colors.text;
+  ctx.font = '600 20px Segoe UI, sans-serif';
+  ctx.fillText('Limites de IA', 18, 30);
+  ctx.fillStyle = colors.faint;
+  ctx.font = '12px Segoe UI, sans-serif';
+  ctx.fillText('Atualizado automaticamente', 18, 50);
+
+  if(!accounts.length){
+    ctx.fillStyle = colors.muted;
+    ctx.font = '14px Segoe UI, sans-serif';
+    ctx.fillText('Carregando limites...', 18, 94);
+    return;
+  }
+
+  let y = 68;
+  accounts.forEach((account, index) => {
+    const cardHeight = 52 + rows[index] * 30 + (account.detail ? 16 : 0);
+    canvasRoundRect(ctx, 12, y, width - 24, cardHeight, 12);
+    ctx.fillStyle = colors.surface;
+    ctx.fill();
+    ctx.strokeStyle = colors.line;
+    ctx.stroke();
+
+    ctx.fillStyle = colors.text;
+    ctx.font = '600 15px Segoe UI, sans-serif';
+    ctx.fillText(canvasText(ctx, account.label || account.typeLabel, 330), 24, y + 23);
+    ctx.fillStyle = colors.faint;
+    ctx.font = '11px Segoe UI, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(canvasText(ctx, account.typeLabel || '', 150), width - 24, y + 23);
+    ctx.textAlign = 'left';
+
+    let rowY = y + 42;
+    if(account.detail){
+      ctx.fillStyle = colors.faint;
+      ctx.font = '11px Segoe UI, sans-serif';
+      ctx.fillText(canvasText(ctx, account.detail, width - 48), 24, rowY);
+      rowY += 16;
+    }
+    if(account.error){
+      ctx.fillStyle = colors.bad;
+      ctx.font = '12px Segoe UI, sans-serif';
+      ctx.fillText(canvasText(ctx, account.error, width - 48), 24, rowY + 12);
+    } else {
+      (account.metrics || []).forEach(metric => {
+        const percent = metric.percent !== undefined && metric.percent !== null;
+        const value = percent ? `${metric.percent}%${resetText(metric) ? ` · ${resetText(metric)}` : ''}` : `${fmtNum(metric.value)} ${metric.unit || ''}`.trim();
+        ctx.fillStyle = colors.muted;
+        ctx.font = '12px Segoe UI, sans-serif';
+        ctx.fillText(canvasText(ctx, metricLabel(metric.label), 220), 24, rowY + 12);
+        ctx.fillStyle = colors.text;
+        ctx.textAlign = 'right';
+        ctx.fillText(canvasText(ctx, value, 275), width - 24, rowY + 12);
+        ctx.textAlign = 'left';
+        if(percent){
+          const amount = Math.max(0, Math.min(100, metric.percent));
+          canvasRoundRect(ctx, 24, rowY + 18, width - 48, 6, 3);
+          ctx.fillStyle = colors.bg;
+          ctx.fill();
+          canvasRoundRect(ctx, 24, rowY + 18, (width - 48) * amount / 100, 6, 3);
+          ctx.fillStyle = amount >= 90 ? colors.bad : amount >= 70 ? colors.warn : colors.ok;
+          ctx.fill();
+        }
+        rowY += 30;
+      });
+    }
+    y += cardHeight + 9;
+  });
+  if(LAST.length > accounts.length){
+    ctx.fillStyle = colors.faint;
+    ctx.font = '12px Segoe UI, sans-serif';
+    ctx.fillText(`+ ${LAST.length - accounts.length} conta(s) no painel principal`, 18, height - 14);
+  }
+}
+function clearVideoFloatingLimits(video){
+  if(!video || video !== floatingLimitsVideo) return;
+  const stream = video.srcObject;
+  video.pause();
+  video.srcObject = null;
+  video.remove();
+  if(stream){ stream.getTracks().forEach(track => track.stop()); }
+  floatingLimitsVideo = null;
+  floatingLimitsCanvas = null;
+  updateFloatingLimitsButton();
+}
+async function openVideoFloatingLimits(){
+  if(!supportsVideoFloatingLimits()) return false;
+  const canvas = document.createElement('canvas');
+  const video = document.createElement('video');
+  floatingLimitsCanvas = canvas;
+  floatingLimitsVideo = video;
+  renderVideoFloatingLimits();
+  video.muted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-1px;top:-1px';
+  video.srcObject = canvas.captureStream(2);
+  video.addEventListener('leavepictureinpicture', () => clearVideoFloatingLimits(video), {once:true});
+  document.body.appendChild(video);
+  try{
+    await video.play();
+    await video.requestPictureInPicture();
+    updateFloatingLimitsButton();
+    return true;
+  }catch(e){
+    console.error('Nao foi possivel abrir o video flutuante', e);
+    clearVideoFloatingLimits(video);
+    return false;
+  }
+}
+async function closeFloatingLimits(){
+  if(floatingLimitsWindow && !floatingLimitsWindow.closed){
+    floatingLimitsWindow.close();
+    return;
+  }
+  if(floatingLimitsVideo && document.pictureInPictureElement === floatingLimitsVideo){
+    await document.exitPictureInPicture();
+  }
+}
+async function toggleFloatingLimits(){
+  if(isFloatingLimitsOpen()){
+    await closeFloatingLimits();
+    return;
+  }
+  if(supportsFloatingLimits()){
+   try{
+    floatingLimitsWindow = await window.documentPictureInPicture.requestWindow({width:410, height:620});
+    floatingLimitsWindow.document.head.innerHTML = `<style>
+      :root{--bg:#151d30;--surface:#222e49;--line:#384663;--txt:#f8fafc;--muted:#a6b3c9;--faint:#7c8aa5;--accent:#22c55e;--bad:#ef4444;--warn:#f5a623;--ok:#22c55e}
+      html[data-theme="light"]{--bg:#eef2f8;--surface:#fff;--line:#cbd5e1;--txt:#0f172a;--muted:#475569;--faint:#64748b;--accent:#16a34a}
+      *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:14px "Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased} main{padding:14px;min-height:100vh}.floating-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 2px 14px}.floating-top h1{margin:0;font-size:16px}.floating-top p{margin:3px 0 0;color:var(--faint);font-size:11px}.floating-actions{display:flex;gap:6px}button{border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--txt);padding:7px 9px;font:inherit;font-size:12px;cursor:pointer}button:hover{border-color:var(--accent)}button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.floating-actions button:last-child{font-size:18px;line-height:12px;padding:7px 10px}.floating-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:9px}.floating-card header{display:flex;align-items:baseline;justify-content:space-between;gap:8px}.floating-card h2{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.floating-card header span{color:var(--faint);font-size:10px;text-transform:uppercase;white-space:nowrap}.floating-detail{margin:4px 0 9px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.floating-metric{margin-top:10px}.floating-metric>div{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}.floating-metric strong{color:var(--txt);font-size:13px}.floating-metric small{display:block;margin-top:2px;color:var(--faint);font-size:10px}.floating-metric i{display:block;height:6px;margin-top:5px;background:var(--bg);border-radius:99px;overflow:hidden}.floating-metric i b{display:block;height:100%;border-radius:inherit}.floating-value{display:flex;align-items:baseline;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}.floating-value small{display:inline;color:var(--muted);font-size:10px}.floating-error{margin:10px 0 0;color:var(--bad);font-size:12px;line-height:1.4}.floating-empty{color:var(--muted);text-align:center;padding:28px 12px}
+    </style>`;
+    floatingLimitsWindow.addEventListener('pagehide', () => {
+      floatingLimitsWindow = null;
+      updateFloatingLimitsButton();
+    }, {once:true});
+    renderFloatingLimits();
+    updateFloatingLimitsButton();
+    return;
+   }catch(e){
+     console.error('Nao foi possivel abrir os limites flutuantes', e);
+   }
+  }
+  if(await openVideoFloatingLimits()) return;
+  alert('Seu navegador não oferece limites flutuantes. Use Chrome, Microsoft Edge ou Opera atualizado no Windows.');
+}
+
 async function load(force){
   try{
     const r = await fetch('/api/status' + (force ? '?force=1' : ''));
@@ -2118,6 +2365,7 @@ async function load(force){
     POLL = Math.max(10, Math.min(30, mn));
     // nao redesenha enquanto o usuario estiver arrastando um card
     if(!dragId) renderCards();
+    renderFloatingLimits();
   }catch(e){
     console.error('erro ao atualizar', e);
   }
@@ -2442,12 +2690,14 @@ async function delAcc(id){
 // injeta os icones (logo + botoes) uma vez
 document.getElementById('brandlogo').innerHTML = svg('activity',19);
 document.getElementById('emptylogo').innerHTML = svg('activity',28);
+document.getElementById('btnFloating').insertAdjacentHTML('afterbegin', svg('popout'));
 document.getElementById('btnRefresh').insertAdjacentHTML('afterbegin', svg('refresh'));
 document.getElementById('btnAdd').insertAdjacentHTML('afterbegin', svg('plus'));
 document.getElementById('modal_close').innerHTML = svg('x');
 
 // sincroniza o icone do seletor de tema com o tema atual
 applyTheme(document.documentElement.getAttribute('data-theme'));
+updateFloatingLimitsButton();
 
 // fecha o modal clicando fora
 document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeAdd(); });

@@ -76,6 +76,10 @@ http://127.0.0.1:8765
 
 Para fechar, encerre o terminal/janela onde o app está rodando.
 
+## Limites Flutuantes no Windows
+
+Depois de abrir o painel e fazer login, clique em `Flutuante`, ao lado do seletor de tema. No Chrome ou Microsoft Edge atualizados, os limites abrem em uma janela que fica visível sobre os outros programas. No Opera e em navegadores sem essa janela, o painel usa o Picture-in-Picture de vídeo com os limites desenhados localmente. Mantenha a aba principal do Monitor de IA aberta para continuar recebendo as atualizações.
+
 ## Adicionar Contas
 
 Clique em `Adicionar conta` no painel.
