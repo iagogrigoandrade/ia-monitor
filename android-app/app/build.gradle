@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+def widgetLogoResDir = file("$buildDir/generated/widget-logos")
+
+tasks.register('prepareWidgetLogos', Copy) {
+    from('../../assets/integrations')
+    include 'claude-icon.webp', 'codex-icon.webp', 'deepseek-icon.webp', 'openrouter-icon.webp'
+    rename { filename ->
+        if (filename == 'claude-icon.webp') return 'widget_claude.webp'
+        if (filename == 'codex-icon.webp') return 'widget_codex.webp'
+        if (filename == 'deepseek-icon.webp') return 'widget_deepseek.webp'
+        if (filename == 'openrouter-icon.webp') return 'widget_openrouter.webp'
+        return filename
+    }
+    into "$widgetLogoResDir/drawable"
+}
+
+android {
+    namespace 'br.com.monitoria.android'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'br.com.monitoria.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            res.srcDir widgetLogoResDir
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('prepareWidgetLogos')
+}
+
+dependencies {
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    implementation 'androidx.work:work-runtime:2.9.1'
+}

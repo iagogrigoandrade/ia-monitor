@@ -6,3 +6,5 @@ config.json
 watch-app/node_modules/
 watch-app/dist/
 watch-app/.zeus/
+android-app/.gradle/
+android-app/app/build/

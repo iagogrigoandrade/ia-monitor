@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Monitor de IA</string>
+    <string name="action_refresh">Atualizar</string>
+    <string name="action_settings">Configurar servidor</string>
+    <string name="action_add_widget">Adicionar widget</string>
+    <string name="server_settings_title">Conectar ao painel</string>
+    <string name="server_settings_message">Use o endereco acessivel pelo seu celular. HTTPS e recomendado.</string>
+    <string name="server_url_hint">URL do painel, ex.: https://monitor.exemplo.com</string>
+    <string name="username_hint">Usuario (opcional)</string>
+    <string name="password_hint">Senha (opcional)</string>
+    <string name="password_keep_hint">Senha: deixe vazio para manter a salva</string>
+    <string name="clear_saved_password">Remover senha salva</string>
+    <string name="save">Salvar</string>
+    <string name="authentication_needed">Informe usuario e senha em Configurar servidor.</string>
+    <string name="widget_help_title">Adicionar widget</string>
+    <string name="widget_help_message">Mantenha pressionada uma area vazia da tela inicial, escolha Widgets e arraste o widget Monitor de IA.</string>
+    <string name="widget_loading">Atualizando dados...</string>
+    <string name="widget_not_configured">Abra o app e configure a URL do painel.</string>
+    <string name="widget_request_failed">Falha ao atualizar (HTTP %1$d).</string>
+    <string name="widget_connection_failed">Nao foi possivel conectar ao painel.</string>
+    <string name="widget_check_settings">Confira a URL, a rede e a senha.</string>
+    <string name="widget_updated_at">Atualizado as %1$s</string>
+    <string name="widget_no_accounts">Nenhuma conta cadastrada.</string>
+    <string name="widget_no_data">Sem dados de uso.</string>
+    <string name="panel_error_title">Nao foi possivel abrir o painel</string>
+    <string name="panel_error_retry">Tentar novamente</string>
+    <string name="panel_error_settings">Configurar servidor</string>
+    <string name="panel_error_network">%1$s\n\nConfira a URL, a conexao e o certificado HTTPS.</string>
+    <string name="panel_error_unsupported_link">Este link nao pode ser aberto neste celular.</string>
+</resources>
