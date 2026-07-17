@@ -8,19 +8,39 @@ import android.content.Context;
 import android.content.Intent;
 import android.widget.RemoteViews;
 
+import androidx.work.Constraints;
+import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
+import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
+
+import java.util.concurrent.TimeUnit;
 
 public final class MonitorWidgetProvider extends AppWidgetProvider {
     static final String ACTION_REFRESH = "br.com.monitoria.android.REFRESH_WIDGET";
     private static final String UPDATE_WORK_NAME = "monitor-widget-update";
+    private static final String PERIODIC_WORK_NAME = "monitor-widget-periodic";
 
     @Override
     public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
         WidgetSnapshotStore.saveStatus(context, context.getString(R.string.widget_loading));
         render(context, appWidgetIds);
         requestUpdate(context);
+        schedulePeriodicUpdates(context);
+    }
+
+    @Override
+    public void onEnabled(Context context) {
+        super.onEnabled(context);
+        schedulePeriodicUpdates(context);
+    }
+
+    @Override
+    public void onDisabled(Context context) {
+        super.onDisabled(context);
+        WorkManager.getInstance(context.getApplicationContext()).cancelUniqueWork(PERIODIC_WORK_NAME);
     }
 
     @Override
@@ -32,7 +52,24 @@ public final class MonitorWidgetProvider extends AppWidgetProvider {
             }
             renderAll(context);
             requestUpdate(context);
+            schedulePeriodicUpdates(context);
         }
+    }
+
+    static void schedulePeriodicUpdates(Context context) {
+        Constraints constraints = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build();
+        PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
+                WidgetUpdateWorker.class,
+                15,
+                TimeUnit.MINUTES
+        ).setConstraints(constraints).build();
+        WorkManager.getInstance(context.getApplicationContext()).enqueueUniquePeriodicWork(
+                PERIODIC_WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+        );
     }
 
     static void requestUpdate(Context context) {
@@ -60,13 +97,47 @@ public final class MonitorWidgetProvider extends AppWidgetProvider {
         render(context, ids);
     }
 
+    @Override
+    public void onAppWidgetOptionsChanged(
+            Context context,
+            AppWidgetManager appWidgetManager,
+            int appWidgetId,
+            android.os.Bundle newOptions
+    ) {
+        super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions);
+        render(context, new int[] {appWidgetId});
+    }
+
     private static void render(Context context, int[] appWidgetIds) {
         AppWidgetManager manager = AppWidgetManager.getInstance(context);
         WidgetSnapshotStore.Snapshot snapshot = WidgetSnapshotStore.load(context);
         boolean hasAccounts = WidgetSnapshotStore.hasAccounts(snapshot);
         for (int appWidgetId : appWidgetIds) {
+            android.os.Bundle options = manager.getAppWidgetOptions(appWidgetId);
+            int widthDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0);
+            int heightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0);
+            boolean narrow = widthDp > 0 && widthDp < 200;
+            boolean veryNarrow = widthDp > 0 && widthDp < 150;
+            boolean shortHeight = heightDp > 0 && heightDp < 170;
+
             RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.monitor_widget);
             views.setTextViewText(R.id.widget_status, snapshot.status);
+            views.setViewVisibility(
+                    R.id.widget_subtitle,
+                    (narrow || shortHeight) ? android.view.View.GONE : android.view.View.VISIBLE
+            );
+            views.setViewVisibility(
+                    R.id.widget_status,
+                    shortHeight ? android.view.View.GONE : android.view.View.VISIBLE
+            );
+            views.setViewVisibility(
+                    R.id.widget_brand_mark,
+                    veryNarrow ? android.view.View.GONE : android.view.View.VISIBLE
+            );
+            views.setTextViewText(
+                    R.id.widget_refresh,
+                    narrow ? "↻" : context.getString(R.string.action_refresh)
+            );
             views.setTextViewText(
                     R.id.widget_empty,
                     snapshot.status.isEmpty() ? context.getString(R.string.widget_no_accounts) : snapshot.status

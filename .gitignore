@@ -8,3 +8,4 @@ watch-app/dist/
 watch-app/.zeus/
 android-app/.gradle/
 android-app/app/build/
+android-app/build/

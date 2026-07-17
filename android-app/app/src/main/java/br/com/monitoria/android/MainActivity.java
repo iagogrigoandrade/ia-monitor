@@ -11,11 +11,11 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
-import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.HttpAuthHandler;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
@@ -26,17 +26,39 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public final class MainActivity extends Activity {
-    private static final int MENU_REFRESH = 1;
     private static final int MENU_SETTINGS = 2;
     private static final int MENU_ADD_WIDGET = 3;
+
+    // Ajusta o cabecalho web dentro do app: esconde o botao "Flutuante"
+    // (recurso de navegador desktop) e adiciona o menu "3 pontinhos" nativo.
+    private static final String HEADER_SCRIPT = "(function(){"
+            + "var f=document.getElementById('btnFloating');"
+            + "if(f){f.style.display='none';}"
+            + "if(document.getElementById('btnAppMenu')||!window.MonitorApp){return;}"
+            + "var btns=document.querySelector('header .btns');"
+            + "if(!btns){return;}"
+            + "var b=document.createElement('button');"
+            + "b.id='btnAppMenu';"
+            + "b.className='ghost';"
+            + "b.textContent='\\u22EE';"
+            + "b.title='Menu do aplicativo';"
+            + "b.setAttribute('aria-label','Menu do aplicativo');"
+            + "b.style.fontSize='18px';"
+            + "b.style.lineHeight='1';"
+            + "b.style.fontWeight='700';"
+            + "b.onclick=function(){MonitorApp.openMenu();};"
+            + "btns.appendChild(b);"
+            + "})();";
 
     private WebView webView;
     private LinearLayout errorPanel;
     private TextView errorMessage;
+    private View menuAnchor;
     private boolean authenticationDialogVisible;
     private boolean mainFrameLoadFailed;
 
@@ -45,7 +67,7 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         ActionBar actionBar = getActionBar();
         if (actionBar != null) {
-            actionBar.setTitle(R.string.app_name);
+            actionBar.hide();
         }
 
         webView = new WebView(this);
@@ -57,6 +79,7 @@ public final class MainActivity extends Activity {
         webView.getSettings().setSupportMultipleWindows(false);
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new PanelWebViewClient());
+        webView.addJavascriptInterface(new AppBridge(), "MonitorApp");
 
         FrameLayout root = new FrameLayout(this);
         root.addView(webView, new FrameLayout.LayoutParams(
@@ -68,6 +91,11 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+        menuAnchor = new View(this);
+        FrameLayout.LayoutParams anchorParams = new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.END);
+        anchorParams.topMargin = dp(56);
+        anchorParams.rightMargin = dp(12);
+        root.addView(menuAnchor, anchorParams);
         setContentView(root);
 
         if (MonitorConfig.load(this).hasServer()) {
@@ -77,23 +105,15 @@ public final class MainActivity extends Activity {
         }
     }
 
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        menu.add(Menu.NONE, MENU_REFRESH, 0, R.string.action_refresh)
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-        menu.add(Menu.NONE, MENU_ADD_WIDGET, 1, R.string.action_add_widget)
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-        menu.add(Menu.NONE, MENU_SETTINGS, 2, R.string.action_settings)
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-        return true;
+    private void showAppMenu() {
+        PopupMenu popup = new PopupMenu(this, menuAnchor, Gravity.END);
+        popup.getMenu().add(0, MENU_ADD_WIDGET, 1, R.string.action_add_widget);
+        popup.getMenu().add(0, MENU_SETTINGS, 2, R.string.action_settings);
+        popup.setOnMenuItemClickListener(this::onAppMenuItemSelected);
+        popup.show();
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        if (item.getItemId() == MENU_REFRESH) {
-            refreshPanel();
-            return true;
-        }
+    private boolean onAppMenuItemSelected(MenuItem item) {
         if (item.getItemId() == MENU_SETTINGS) {
             showServerSettings(false);
             return true;
@@ -102,7 +122,14 @@ public final class MainActivity extends Activity {
             requestWidgetPin();
             return true;
         }
-        return super.onOptionsItemSelected(item);
+        return false;
+    }
+
+    private final class AppBridge {
+        @JavascriptInterface
+        public void openMenu() {
+            runOnUiThread(MainActivity.this::showAppMenu);
+        }
     }
 
     @Override
@@ -128,14 +155,6 @@ public final class MainActivity extends Activity {
         }
         hidePanelError();
         webView.loadUrl(config.serverUrl + "/");
-    }
-
-    private void refreshPanel() {
-        webView.evaluateJavascript(
-                "if (typeof load === 'function') { load(true); } else { location.reload(); }",
-                null
-        );
-        MonitorWidgetProvider.requestUpdate(this);
     }
 
     private void showServerSettings(boolean required) {
@@ -295,6 +314,7 @@ public final class MainActivity extends Activity {
             if (!mainFrameLoadFailed) {
                 hidePanelError();
             }
+            view.evaluateJavascript(HEADER_SCRIPT, null);
         }
 
         @Override
